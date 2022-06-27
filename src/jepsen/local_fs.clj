@@ -96,7 +96,7 @@
                           :dir (.getCanonicalPath (store/path test))}))))
             ; Great, now run quickcheck
             checked (tc/quick-check 200 prop)]
-        (pprint checked)
+        ;(pprint checked)
         (println)
         (let [dir (-> checked :shrunk :result-data :dir)
               [name time] (take-last 2 (str/split dir #"/"))

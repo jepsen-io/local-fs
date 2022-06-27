@@ -150,7 +150,7 @@
   entry (e.g. a dir or link) recursively."
   [entry]
   (cond (link? entry) [(:inode entry)]
-        (dir? entry)  (mapcat inodes-in-entry (:files entry))
+        (dir? entry)  (mapcat inodes-in-entry (vals (:files entry)))
         true          nil))
 
 (defn track-inode-link-count-changes
@@ -169,6 +169,18 @@
                   (update-inode-link-count fs inode delta))))
             fs
             (distinct (concat (keys inodes) (keys inodes'))))))
+
+(defn assert-valid-fs
+  "Checks that a filesystem is valid--e.g. that its inodes are not dangling."
+  [fs]
+  (let [dir-inodes (set (inodes-in-entry (:dir fs)))
+        dangling   (remove dir-inodes (keys (:inodes fs)))]
+    (when (seq dangling)
+      (throw+ {:type     ::dangling-inodes
+               :dangling dangling
+               :dir-inodes dir-inodes
+               :fs       fs})))
+  fs)
 
 ;; Directory traversal
 
@@ -483,6 +495,14 @@
 
                          true
                          (let [[fs' op'] (fs-op fs invoke)
+                               ; Leaving this commented out for speed, but if
+                               ; we see weird fs structures, this incremental
+                               ; fsck on each op is nice
+                               ;_ (try+ (assert-valid-fs fs')
+                               ;        (catch clojure.lang.ExceptionInfo e
+                               ;          (throw+ {:type ::invalid-fs-state
+                               ;                   :fs   fs
+                               ;                   :op   invoke})))
                                ; We want to use the index and timing info from
                                ; the actual completion
                                op' (assoc op'
