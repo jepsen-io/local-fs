@@ -357,6 +357,23 @@
                              (update in :data str data))))
            (assoc op :type :ok)]))
 
+      :ln
+      (let [[from-path to-path] value
+            from-entry (assert-file (get-path fs from-path))
+            to-entry   (get-path* fs to-path)
+            ; If link target is a directory, create a link *inside* that dir
+            to-path    (if (dir? to-entry)
+                         (vec (concat to-path [(last from-path)]))
+                         to-path)
+            to-entry   (get-path* fs to-path)
+            ; Actually link
+            fs' (update-path* fs to-path
+                              (fn [link]
+                                (when-not (nil? link)
+                                  (throw+ {:type ::exists}))
+                                from-entry))]
+        [fs' (assoc op :type :ok)])
+
       :mkdir
       [(update-path* fs value
                      (fn [path]
@@ -382,7 +399,10 @@
               (when (nil? from-entry)
                 (throw+ {:type ::does-not-exist}))
 
-              (when (= from-path to-path)
+              (when (or (= from-path to-path)
+                        ; These could be two distinct paths with links to the
+                        ; same inode
+                        (and (link? from-entry) (= from-entry to-entry)))
                 (throw+ {:type ::same-file}))
 
               (when (and (dir? to-entry)

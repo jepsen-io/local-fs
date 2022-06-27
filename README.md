@@ -5,6 +5,12 @@ on your local node; no cluster required.
 
 ## Usage
 
+To check the local filesystem (using a directory called `data` in this repository):
+
+```
+lein run quickcheck
+```
+
 To find a bug in lazyfs, run
 
 ```

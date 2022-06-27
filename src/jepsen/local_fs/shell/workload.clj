@@ -40,7 +40,9 @@
      (g/let [path gen-path]
        {:f :mkdir, :value path})
      (g/let [path gen-path]
-       {:f :rm, :value path})]))
+       {:f :rm, :value path})
+     (g/let [from gen-path, to gen-path]
+       {:f :ln, :value [from to]})]))
 
 (def fs-history-gen
   "Generates a whole history"

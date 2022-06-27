@@ -11,7 +11,7 @@
                     [util :as util :refer [pprint-str
                                            name+
                                            timeout]]]
-            [jepsen.local-fs [util :refer [sh]]]
+            [jepsen.local-fs [util :refer [sh *sh-trace*]]]
             [knossos.op :as op]
             [slingshot.slingshot :refer [try+ throw+]])
   (:import (java.lang Process
@@ -57,6 +57,21 @@
                             #"No such file"    :does-not-exist
 
                             (throw+ e)))))
+
+    :ln
+    (let [[from to] value]
+      (try+ (sh :ln (join-path from) (join-path to) {:dir dir})
+            (assoc op :type :ok)
+            (catch [:exit 1] e
+              (assoc op
+                     :type :fail
+                     :error (condp re-find (:err e)
+                              #"File exists"               :exists
+                              #"Not a directory"           :not-dir
+                              #"not allowed for directory" :not-file
+                              #"No such file or directory" :does-not-exist
+                              (throw+ e))))))
+
 
     :mkdir
     (try+ (sh :mkdir (join-path value) {:dir dir})
