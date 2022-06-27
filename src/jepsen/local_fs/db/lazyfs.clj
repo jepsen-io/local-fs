@@ -8,6 +8,10 @@
             [jepsen.local-fs [util :refer [sh sh* *sh-trace*]]]
             [slingshot.slingshot :refer [try+ throw+]]))
 
+(def current-version
+  "What version do we have currently built?"
+  (atom nil))
+
 (def lazyfs-dir
   "Where do we compile lazyfs?"
   "lazyfs")
@@ -19,20 +23,22 @@
 (defn install!
   "Installs lazyfs locally"
   [version]
-  (info "Installing lazyfs" version)
-  ; Get repo
-  (try+ (sh* :ls lazyfs-dir)
-        (catch [:exit 2] _
-          ; Doesn't exist yet
-          (sh :mkdir :-p lazyfs-dir)
-          (sh :rmdir lazyfs-dir)
-          (sh :git :clone lazyfs/repo-url lazyfs-dir)))
-  ; Check out version
-  (sh :git :fetch             {:dir lazyfs-dir})
-  (sh :git :checkout version  {:dir lazyfs-dir})
-  (sh :git :clean :-fx        {:dir lazyfs-dir})
-  (sh "./build.sh"            {:dir (str lazyfs-dir "/libs/libpcache")})
-  (sh "./build.sh"            {:dir (str lazyfs-dir "/lazyfs")}))
+  (when-not (= version @current-version)
+    (info "Installing lazyfs" version)
+    ; Get repo
+    (try+ (sh* :ls lazyfs-dir)
+          (catch [:exit 2] _
+            ; Doesn't exist yet
+            (sh :mkdir :-p lazyfs-dir)
+            (sh :rmdir lazyfs-dir)
+            (sh :git :clone lazyfs/repo-url lazyfs-dir)))
+    ; Check out version
+    (sh :git :fetch             {:dir lazyfs-dir})
+    (sh :git :checkout version  {:dir lazyfs-dir})
+    (sh :git :clean :-fx        {:dir lazyfs-dir})
+    (sh "./build.sh"            {:dir (str lazyfs-dir "/libs/libpcache")})
+    (sh "./build.sh"            {:dir (str lazyfs-dir "/lazyfs")})
+    (reset! current-version version)))
 
 (defn start-daemon!
   "Starts the lazyfs daemon. Takes a lazyfs map."
