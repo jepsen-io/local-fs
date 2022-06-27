@@ -1,8 +1,13 @@
 (ns jepsen.local-fs.util
   "Kitchen sink"
   (:require [clojure.java [shell :as shell]]
+            [clojure.tools.logging :refer [info warn]]
             [jepsen [util :as util :refer [name+]]]
             [slingshot.slingshot :refer [try+ throw+]]))
+
+(def ^:dynamic *sh-trace*
+  "If true, logs sh commands."
+  false)
 
 (defn sh-escape
   "Converts arguments to strings for sh."
@@ -21,12 +26,14 @@
         [args opts] (if (map? last-arg)
                       [(drop-last args) last-arg]
                       [args {}])
-        res         (apply shell/sh (concat (->> args
-                                                 (map sh-escape))
-                                            (mapcat identity opts)))]
+        sh-args     (concat (map sh-escape args)
+                            (mapcat identity opts))
+        _           (when *sh-trace*
+                      (info (pr-str sh-args)))
+        res         (apply shell/sh sh-args)]
     (when-not (zero? (:exit res))
       (throw+ (assoc res :type ::nonzero-exit)
-              (str "Shell command " (pr-str args)
+              (str "Shell command " (pr-str sh-args)
                    " returned exit status " (:exit res) "\n"
                    (:out res) "\n"
                    (:err res))))

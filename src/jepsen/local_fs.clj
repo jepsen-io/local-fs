@@ -9,16 +9,22 @@
                     [store :as store]
                     [tests :as tests]]
             [jepsen.local-fs.shell.workload :as shell]
-            [jepsen.local-fs.db [dir :as db.dir]]
+            [jepsen.local-fs.db [dir :as db.dir]
+                                [lazyfs :as db.lazyfs]]
             [clojure.test.check :as tc]
             [clojure.test.check [properties :as prop]
                                 [results :refer [Result]]]))
+
+(def dbs
+  "A map of DB names to functions that take CLI options and build DBs."
+  {:dir    db.dir/db
+   :lazyfs db.lazyfs/db})
 
 (defn shell-test
   "Takes CLI options and constructs a test for the shell workload."
   [opts]
   (let [workload (shell/workload opts)
-        db       (db.dir/db opts)]
+        db       ((dbs (:db opts)) opts)]
     (merge tests/noop-test
            opts
            {:name   "shell"
@@ -40,8 +46,15 @@
 
 (def cli-opts
   "Common CLI options."
-  [["-d" "--dir DIR" "What directory should we use for our mount point?"
-    :default "data"]])
+  [[nil "--db DB" "What DB (filesystem) should we mount?"
+    :default :dir
+    :parse-fn keyword
+    :validate [dbs (cli/one-of dbs)]]
+
+   [nil "--dir DIR" "What directory should we use for our mount point?"
+    :default "data"]
+
+   ["-v" "--version VERSION" "A version string, passed to the DB. For lazyfs, this controls the git commit we check out."]])
 
 (def quickcheck-cmd
   "A CLI command for quickcheck-style testing. Generates histories using

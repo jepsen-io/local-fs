@@ -7,9 +7,12 @@ profiles.clj
 pom.xml
 pom.xml.asc
 *.jar
+*.swp
 *.class
 /.lein-*
 /.nrepl-port
 /.prepl-port
 .hgignore
 .hg/
+/lazyfs
+/data.lazyfs
