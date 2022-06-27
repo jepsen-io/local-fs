@@ -5,9 +5,19 @@ on your local node; no cluster required.
 
 ## Usage
 
+To find a bug in lazyfs, run
+
 ```
-lein run quickcheck
+lein run quickcheck --db lazyfs --version be22191019619f3db7908b50fba500a3c9821884
 ```
+
+To do this you'll need libfuse3-dev, fuse set up appropriately for lazyfs, gcc, etc, as well as leiningen. This will run a whole bunch of tests and spit out results in `store/`. You can browse these at the filesystem directly, or run
+
+```
+lein run serve
+```
+
+... which launches a web server on http://localhost:8080.
 
 ## License
 
