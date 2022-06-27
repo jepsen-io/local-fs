@@ -1,7 +1,9 @@
 (ns jepsen.local-fs
   "Main entry point for local FS testing. Handles CLI arguments, launches
   tests."
-  (:require [clojure.tools.logging :refer [info warn]]
+  (:require [clojure [pprint :refer [pprint]]
+                     [string :as str]]
+            [clojure.tools.logging :refer [info warn]]
             [jepsen [checker :as checker]
                     [cli :as cli]
                     [core :as jepsen]
@@ -13,12 +15,21 @@
                                 [lazyfs :as db.lazyfs]]
             [clojure.test.check :as tc]
             [clojure.test.check [properties :as prop]
-                                [results :refer [Result]]]))
+                                [results :refer [Result]]])
+  (:import (java.net URLEncoder)))
 
 (def dbs
   "A map of DB names to functions that take CLI options and build DBs."
   {:dir    db.dir/db
    :lazyfs db.lazyfs/db})
+
+(defn stats-checker
+  "A stats checker that never fails"
+  []
+  (reify checker/Checker
+    (check [this test history opts]
+      (-> (checker/check (checker/stats) test history opts)
+          (assoc :valid? true)))))
 
 (defn shell-test
   "Takes CLI options and constructs a test for the shell workload."
@@ -27,15 +38,18 @@
         db       ((dbs (:db opts)) opts)]
     (merge tests/noop-test
            opts
-           {:name   "shell"
+           {:name   (str "shell "
+                         (name (:db opts))
+                         (when (:version opts)
+                           (str " " (:version opts))))
             :ssh    {:dummy? true}
             :nodes  ["local"]
             :db      db
             :checker (checker/compose
-                       {:perf (checker/perf)
-                        :stats (checker/stats)
+                       {:perf       (checker/perf)
+                        :stats      (stats-checker)
                         :exceptions (checker/unhandled-exceptions)
-                        :workload (:checker workload)})
+                        :workload   (:checker workload)})
             :client         (:client workload)})))
 
 (defn test-check-gen
@@ -76,11 +90,21 @@
                                   jepsen/run!)]
                      (reify Result
                        (pass? [_]
-                         (:valid? (:results test)))
+                         (= true (:valid? (:workload (:results test)))))
                        (result-data [_]
-                         {:dir (.getName (store/path test))}))))]
-        ; Great, now run quickcheck
-        (tc/quick-check 10 prop)))}})
+                         {:workload (:workload (:results test))
+                          :dir (.getCanonicalPath (store/path test))}))))
+            ; Great, now run quickcheck
+            checked (tc/quick-check 200 prop)]
+        (pprint checked)
+        (println)
+        (let [dir (-> checked :shrunk :result-data :dir)
+              [name time] (take-last 2 (str/split dir #"/"))
+              url (str "http://localhost:8080/files/"
+                       (URLEncoder/encode name) "/"
+                       (URLEncoder/encode time))]
+          (println "Shrunk test:" dir)
+          (println (str "             " url)))))}})
 
 (defn -main
   "Handles command line arguments. Can run a test, or a web server for browsing

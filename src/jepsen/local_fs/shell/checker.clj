@@ -32,109 +32,218 @@
   [path]
   (butlast path))
 
-(defn model-dir
-  "Constructs a model filesystem state. Our state is a map of file/directory
-  names to maps representing those files or directories. Directories are:
+(declare dir)
+
+(defn fs
+  "A model filesystem. Has an inode table: a map of inode numbers to files, and
+  a directory, which is the root directory map."
+  []
+  {:next-inode-number 0
+   :inodes            (sorted-map)
+   :dir               (dir)})
+
+(defn inode
+  "Constructs an inode entry. Starts off with a :link-count of 0."
+  []
+  {:link-count 0
+   :data       ""})
+
+(defn dir
+  "Constructs a directory model. Contains a map of file/directory names to maps
+  representing those files or directories. Directories are:
 
     {:type  :dir
-     :files {... another fs map ...}}
-
-  Files are:
-
-    {:type :file
-     :data \"a string\"}"
+     :files {\"some-filename\" {:type :link ...}}}"
   []
   {:type :dir
    :files {}})
 
-(defn model-file
-  "Constructs an empty model of a file."
-  []
-  {:type :file
-   :data ""})
+(defn link
+  "Constructs a hard link to an inode number"
+  [inode-number]
+  {:type  :link
+   :inode inode-number})
 
-(defn model-dir?
+(defn dir?
   "Is this a model directory?"
   [dir]
   (= :dir (:type dir)))
 
-(defn model-file?
-  "Is this a model file?"
-  [file]
-  (= :file (:type file)))
+(defn link?
+  "Is this a model of a hardlink?"
+  [link]
+  (= :link (:type link)))
+
+(def file?
+  "Asking if something is a file is the same as asking if it's a hardlink."
+  link?)
 
 (defn assert-file
   "Throws {:type ::not-file} when x is not a file. Returns file."
   [file]
-  (when-not (model-file? file)
+  (when-not (file? file)
     (throw+ {:type ::not-file}))
   file)
 
 (defn assert-dir
   "Throws {:type ::not-dir} when x is not a directory. Returns dir."
   [dir]
-  (when-not (model-dir? dir)
+  (when-not (dir? dir)
     (throw+ {:type ::not-dir}))
   dir)
 
+;; Inode management
+
+(defn next-inode-number
+  "Takes a filesystem and returns the next free inode number."
+  [fs]
+  (:next-inode-number fs))
+
+(defn assoc-inode
+  "Adds an inode to the filesystem. Increments the next inode number."
+  [fs inode-number inode]
+  (assert (not (contains? (:inodes fs) inode-number)))
+  (assoc fs
+         :next-inode-number (inc (:next-inode-number fs))
+         :inodes            (assoc (:inodes fs) inode-number inode)))
+
+(defn dissoc-inode
+  "Removes an inode from the filesystem."
+  [{:keys [inodes] :as fs} inode-number]
+  (assert (= 0 (:link-count (get inodes inode-number))))
+  (assoc fs :inodes (dissoc inodes inode-number)))
+
+(defn get-inode
+  "Fetches the inode entry in a filesystem."
+  [fs inode-number]
+  (get-in fs [:inodes inode-number]))
+
+(defn get-link
+  "Takes a link in a filesystem and returns the corresponding inode."
+  [fs link]
+  (get-inode fs (:inode link)))
+
+(defn update-inode
+  "Takes a filesystem and an inode number, and a function which transforms that
+  inode--e.g. changing its :data field. Returns the filesystem with that update
+  applied."
+  [fs inode-number f & args]
+  (apply update-in fs [:inodes inode-number] f args))
+
+(defn update-inode-link-count
+  "Increments (or decrements) the link count for an inode number by `delta`. If
+  the inode count falls to zero, deletes the inode."
+  [fs inode-number delta]
+  (let [inodes (:inodes fs)
+        inode  (or (get inodes inode-number)
+                   (throw+ {:type         ::no-such-inode
+                            :inode-number inode-number
+                            :fs           fs}))
+        inode' (update inode :link-count + delta)
+        inodes' (if (zero? (:link-count inode'))
+                  (dissoc inodes inode-number)
+                  (assoc inodes inode-number inode'))]
+    (assoc fs :inodes inodes')))
+
+(defn inodes-in-entry
+  "Finds all inodes (including duplicates!) referred to by all links in a dir
+  entry (e.g. a dir or link) recursively."
+  [entry]
+  (cond (link? entry) [(:inode entry)]
+        (dir? entry)  (mapcat inodes-in-entry (:files entry))
+        true          nil))
+
+(defn track-inode-link-count-changes
+  "Takes a filesystem and old and new versions of some path--i.e. directories
+  or links. Either may be nil, indicating that the path is being created or
+  deleted. If the multiset of inodes changes, updates the inode counts in the
+  fs inode table."
+  [fs entry entry']
+  (let [inodes  (frequencies (inodes-in-entry entry))
+        inodes' (frequencies (inodes-in-entry entry'))]
+    (reduce (fn [fs inode]
+              (let [delta (- (get inodes' inode 0)
+                             (get inodes  inode 0))]
+                (if (zero? delta)
+                  fs
+                  (update-inode-link-count fs inode delta))))
+            fs
+            (distinct (concat (keys inodes) (keys inodes'))))))
+
+;; Directory traversal
+
 (defn get-path*
-  "Takes a root directory map and a path (as a vector of strings). Returns the
-  file or object at that position, or nil iff it doesn't exist. The empty path
-  refers to the root. Throws:
+  "Takes a filesystem and a path (as a vector of strings). Returns the entry at
+  that position, or nil iff it doesn't exist. The empty path refers to the
+  root. Throws:
 
     {:type ::not-dir}  When some directory in path isn't a directory."
-  [root path]
-  (when root
-    (if (seq path)
-      (do (assert-dir root)
-          (let [[filename & more] path
-                file (get (:files root) filename)]
-            (if (seq more)
-              ; Descend
-              (get-path* file more)
-              ; We got it
-              file)))
-      ; We're asking for the root itself
-      root)))
+  ([fs path]
+   (get-path* fs (:dir fs) path))
+  ([fs root path]
+   (when root
+     (if (seq path)
+       (do (assert-dir root)
+           (let [[filename & more] path
+                 file (get (:files root) filename)]
+             (if (seq more)
+               ; Descend
+               (get-path* fs file more)
+               ; We got it
+               file)))
+       ; We're asking for the root itself
+       root))))
 
 (defn get-path
   "Like get-path*, but throws :type ::does-not-exist when the thing doesn't
   exist."
-  [root path]
-  (if-let [entry (get-path* root path)]
+  [fs path]
+  (if-let [entry (get-path* fs path)]
     entry
     (throw+ {:type ::does-not-exist})))
 
 (defn assoc-path
-  "Takes a root directory map and a path (as a vector of strings) and a new
-  file/dir entry. The empty path refers to the root. Returns the root with that
-  path set to that file/dir. Assoc'ing nil deletes that path.
+  "Takes a filesystem and a path (as a vector of strings) and a new file/dir
+  entry. The empty path refers to the root. Returns the filesystem with that
+  path set to that file/dir. Assoc'ing nil deletes that path. Also tracks
+  changes to link counts.
 
   Throws:
 
     {:type ::not-dir}        When some directory in path isn't a directory.
     {:type ::does-not-exist} When some directory in path doesn't exist."
-  [root path entry']
-  (when-not root
-    (throw+ {:type ::does-not-exist}))
-  (assert-dir root)
-  (if (seq path)
-    (let [[filename & more] path
-          entry (get (:files root) filename)]
-      (if more
-        ; Descend
-        (assoc-in root [:files filename] (assoc-path entry more entry'))
-        ; This is the final directory
-        (if (nil? entry')
-          ; Delete
-          (update root :files dissoc filename)
-          ; Update
-          (assoc-in root [:files filename] entry'))))
-    ; Replace this root
-    entry'))
+  ([fs path entry']
+   ; We need to know both the old and new states of the path so that we can
+   ; keep link counts up to date. To keep the recursion simpler, we capture the
+   ; current value of the entry in a promise.
+   (let [entry-promise (promise)
+         root' (assoc-path (:dir fs) path entry-promise entry')]
+     (-> (assoc fs :dir root')
+         (track-inode-link-count-changes @entry-promise entry'))))
+  ([root path entry-promise entry']
+   (when-not root
+     (throw+ {:type ::does-not-exist}))
+   (assert-dir root)
+   (if (seq path)
+     (let [[filename & more] path
+           entry (get (:files root) filename)]
+       (if more
+         ; Descend
+         (assoc-in root [:files filename]
+                   (assoc-path entry more entry-promise entry'))
+         ; This is the final directory
+         (do (deliver entry-promise (get-in root [:files filename]))
+             (if (nil? entry')
+               ; Delete
+               (update root :files dissoc filename)
+               ; Update
+               (assoc-in root [:files filename] entry')))))
+     ; Replace this root
+     (do (deliver entry-promise dir)
+         entry'))))
 
 (defn update-path*
-  "Takes a root directory map and a path (as a vector of strings) and a
+  "Takes a filesystem and a path (as a vector of strings) and a
   function that transforms whatever file/dir entry is at that path. The empty
   path refers to the root. If the thing referred to by the path doesn't exist,
   passes `nil` to transform. To delete an entry, return nil from transform.
@@ -143,13 +252,13 @@
 
     {:type ::not-dir}        When some directory in path isn't a directory.
     {:type ::does-not-exist} When some directory in path doesn't exist."
-  [root path transform]
-  (let [file  (get-path* root path)
+  [fs path transform]
+  (let [file  (get-path* fs path)
         file' (transform file)]
-    (assoc-path root path file')))
+    (assoc-path fs path file')))
 
 (defn update-dir
-  "Takes a root directory map, a path (as a vector of strings), and a function
+  "Takes a filesystem, a path (as a vector of strings), and a function
   which takes a directory map and modifies it somehow. Descends into the given
   path, applies f to it, and returns the modified root directory.
 
@@ -157,17 +266,17 @@
 
     {:type ::not-dir}        When some path component isn't a directory.
     {:type ::does-not-exist} When the path doesn't exist."
-  [root path transform]
-  (update-path* root path (fn [dir]
-                            (when-not dir
-                              (throw+ {:type ::does-not-exist}))
-                            (assert-dir dir)
-                            (transform dir))))
+  [fs path transform]
+  (update-path* fs path (fn [dir]
+                          (when-not dir
+                            (throw+ {:type ::does-not-exist}))
+                          (assert-dir dir)
+                          (transform dir))))
 
 (defn update-file*
-  "Takes a root directory map, a path to a file (a vector of strings), and a
-  function which takes that file and modifies it. Descends into that directory,
-  applies f to the file, and returns the new root.
+  "Takes an fs, a path to a file (a vector of strings), and a function which
+  takes that file's inode and modifies it. Descends into that directory,
+  applies f to the file's corresponding inode, and returns the new fs.
 
   This variant allows non-existent files to be modified: transform will receive
   `nil` if the file doesn't exist, but its directory does.
@@ -175,82 +284,88 @@
   Throws everything update-dir does, plus
 
     {:type ::not-file}  If the path exists but isn't a file"
-  [root path transform]
-  (update-path* root path (fn [file]
-                            (when (and (not (nil? file))
-                                       (not= :file (:type file)))
-                              (throw+ {:type ::not-file}))
-                            (transform file))))
+  [fs path transform]
+  (if-let [link (get-path* fs path)]
+    ; Modifying an existing file.
+    (let [inode (get-link fs (assert-file link))]
+      (update-inode fs (:inode link) transform))
+    ; Creating a new file.
+    (let [inode-number (next-inode-number fs)
+          inode        (transform nil)]
+      (-> fs
+          ; Save the new inode
+          (assoc-inode inode-number inode)
+          ; And create the link to it
+          (assoc-path path (link inode-number))))))
 
 (defn update-file
-  "Takes a root directory map, a path to a file (a vector of strings), and a
-  function which takes that file and modifies it. Descends into that directory,
-  applies f to the file, and returns the new root.
+  "Takes a filesystem, a path to a file (a vector of strings), and a function
+  which takes that file and modifies it. Descends into that directory, applies
+  f to the file's inode, and returns the new filesystem.
 
   Throws everything update-dir does, plus
 
   {:type ::does-not-exist}  If the file doesn't exist
   {:type ::not-file}        If the path is not a file"
-  [root path transform]
-  (update-file* root path
+  [fs path transform]
+  (update-file* fs path
                 (fn [file]
                   (when-not file
                     (throw+ {:type ::does-not-exist}))
                   (transform file))))
 
 (defn dissoc-path
-  "Takes a root directory map and a path (as a vector of strings). Deletes that
+  "Takes a filesystem and a path (as a vector of strings). Deletes that
   path and returns root. Throws:
 
     {:type ::not-dir}             When some directory in path isn't a directory
     {:type ::does-not-exist}      When some part of the path doesn't exist
     {:type ::cannot-dissoc-root}  When trying to dissoc the root"
-  [root path]
+  [fs path]
   (if (seq path)
-    (update-path* root path (fn [entry]
+    (update-path* fs path (fn [entry]
                               (if entry
                                 nil
                                 (throw+ {:type ::does-not-exist}))))
     (throw+ {:type ::cannot-dissoc-root})))
 
-(defn model-fs-op
+(defn fs-op
   "Applies a filesystem operation to a simulated in-memory filesystem state.
-  Returns a pair of [state', op']: the resulting state, and the completion
+  Returns a pair of [fs', op']: the resulting state, and the completion
   operation."
-  [root {:keys [f value] :as op}]
+  [fs {:keys [f value] :as op}]
   (try+
     (case f
       :append
       (try+
         (let [[path data] value]
-          [(update-file* root path
-                         (fn [file]
-                           (let [file (or file (model-file))]
-                             (update file :data str data))))
+          [(update-file* fs path
+                         (fn [in]
+                           (let [in (or in (inode))]
+                             (update in :data str data))))
            (assoc op :type :ok)]))
 
       :mkdir
-      [(update-path* root value
+      [(update-path* fs value
                      (fn [path]
                        ; We expect this to be empty
                        (when-not (nil? path)
                          (throw+ {:type ::exists}))
-                       (model-dir)))
+                       (dir)))
        (assoc op :type :ok)]
-
 
       :mv (try+
             (let [[from-path to-path] value
-                  from-entry (get-path* root from-path)
-                  to-entry   (get-path* root to-path)
+                  from-entry (get-path* fs from-path)
+                  to-entry   (get-path* fs to-path)
                   ; If moving to a directory, put us *inside* the given dir
-                  to-path    (if (model-dir? to-entry)
+                  to-path    (if (dir? to-entry)
                                (vec (concat to-path [(last from-path)]))
                                to-path)
-                  to-entry   (get-path* root to-path)]
+                  to-entry   (get-path* fs to-path)]
 
               ; Look at ALL THESE WAYS TO FAIL
-              (assert-dir (get-path* root (parent-dir to-path)))
+              (assert-dir (get-path* fs (parent-dir to-path)))
 
               (when (nil? from-entry)
                 (throw+ {:type ::does-not-exist}))
@@ -258,13 +373,13 @@
               (when (= from-path to-path)
                 (throw+ {:type ::same-file}))
 
-              (when (and (model-dir? to-entry)
-                         (not (model-dir? from-entry)))
+              (when (and (dir? to-entry)
+                         (not (dir? from-entry)))
                 (throw+ {:type ::cannot-overwrite-dir-with-non-dir}))
 
               (when (and to-entry
-                         (model-dir? from-entry)
-                         (not (model-dir? to-entry)))
+                         (dir? from-entry)
+                         (not (dir? to-entry)))
                 (throw+ {:type ::cannot-overwrite-non-dir-with-dir}))
 
               (when (= from-path (take (count from-path) to-path))
@@ -272,14 +387,14 @@
 
               ; When moving a directory on top of another directory, the target
               ; must be empty.
-              (when (and (model-dir? from-entry)
-                         (model-dir? to-entry)
+              (when (and (dir? from-entry)
+                         (dir? to-entry)
                          (seq (:files to-entry)))
                 (throw+ {:type ::not-empty}))
 
-              [(-> root
-                   (dissoc-path from-path)
-                   (assoc-path to-path from-entry))
+              [(-> fs
+                   (assoc-path to-path from-entry)
+                   (dissoc-path from-path))
                (assoc op :type :ok)])
             ; Working out the exact order that mv checks and throws errors
             ; has proven incredibly hard so we collapse some of them to
@@ -288,57 +403,47 @@
               (throw+ {:type ::does-not-exist})))
 
       :read
-      (let [path (first value)
-            entry (get-path root path)]
-        (when (not= :file (:type entry))
-          (throw+ {:type ::not-file}))
-        [root (assoc op :type :ok, :value [path (:data entry)])])
+      (let [path  (first value)
+            entry (assert-file (get-path fs path))
+            inode (get-link fs entry)]
+        [fs (assoc op :type :ok, :value [path (:data inode)])])
 
       :rm
-      (do (get-path root value) ; Throws if does not exist
-          [(dissoc-path root value) (assoc op :type :ok)])
+      (do (get-path fs value) ; Throws if does not exist
+          [(dissoc-path fs value) (assoc op :type :ok)])
 
       :touch
-      [(update-dir root (parent-dir value)
-                   (fn [dir]
-                     (cond ; Already exists
-                           (contains? (:files dir) (peek value))
-                           dir
-
-                           ; Doesn't exist
-                           true
-                           (assoc-in dir [:files (peek value)] (model-file)))))
+      [(if (get-path* fs value)
+         fs ; Already exists
+         (update-file* fs value (fn [_] (inode))))
        (assoc op :type :ok)]
 
       :write
       (let [[path data] value
             filename    (peek path)
-            root' (update-dir root (parent-dir path)
-                              (fn [dir]
-                                (let [file (get (:files dir) filename (model-file))]
-                                  (when-not (= :file (:type file))
-                                    (throw+ {:type ::not-file}))
-                                  (let [file' (assoc file :data data)]
-                                    (assoc-in dir [:files filename] file')))))]
-        [root' (assoc op :type :ok)]))
+            fs' (update-file* fs path
+                              (fn [extant-inode]
+                                (-> (or extant-inode (inode))
+                                    (assoc :data data))))]
+        [fs' (assoc op :type :ok)]))
     (catch [:type ::cannot-move-inside-self] e
-      [root (assoc op :type :fail, :error :cannot-move-inside-self)])
+      [fs (assoc op :type :fail, :error :cannot-move-inside-self)])
     (catch [:type ::cannot-overwrite-dir-with-non-dir] e
-      [root (assoc op :type :fail, :error :cannot-overwrite-dir-with-non-dir)])
+      [fs (assoc op :type :fail, :error :cannot-overwrite-dir-with-non-dir)])
     (catch [:type ::cannot-overwrite-non-dir-with-dir] e
-      [root (assoc op :type :fail, :error :cannot-overwrite-non-dir-with-dir)])
+      [fs (assoc op :type :fail, :error :cannot-overwrite-non-dir-with-dir)])
     (catch [:type ::does-not-exist] e
-      [root (assoc op :type :fail, :error :does-not-exist)])
+      [fs (assoc op :type :fail, :error :does-not-exist)])
     (catch [:type ::exists] e
-      [root (assoc op :type :fail, :error :exists)])
+      [fs (assoc op :type :fail, :error :exists)])
     (catch [:type ::not-dir] e
-      [root (assoc op :type :fail, :error :not-dir)])
+      [fs (assoc op :type :fail, :error :not-dir)])
     (catch [:type ::not-empty] e
-      [root (assoc op :type :fail, :error :not-empty)])
+      [fs (assoc op :type :fail, :error :not-empty)])
     (catch [:type ::not-file] e
-      [root (assoc op :type :fail, :error :not-file)])
+      [fs (assoc op :type :fail, :error :not-file)])
     (catch [:type ::same-file] e
-      [root (assoc op :type :fail, :error :same-file)])))
+      [fs (assoc op :type :fail, :error :same-file)])))
 
 (defn simple-trace
   "Takes a collection of ops from a history and strips them down to just [type
@@ -358,37 +463,36 @@
   (reify checker/Checker
     (check [this test history opts]
       (let [; Simulate evolution
-            [roots
-             model-history]
-            (loopr [root     (model-dir)
+            [fss model-history]
+            (loopr [fs       (fs)
                     invoke   nil
-                    roots    []
+                    fss      []
                     history' []]
                    [op history]
                    (cond (= :nemesis (:process op))
-                         (recur root
+                         (recur fs
                                 invoke
-                                (conj roots root)
+                                (conj fss fs)
                                 (conj history' op))
 
                          (= :invoke (:type op))
-                         (recur root
+                         (recur fs
                                 op
-                                (conj roots root)
+                                (conj fss fs)
                                 (conj history' op))
 
                          true
-                         (let [[root' op'] (model-fs-op root invoke)
+                         (let [[fs' op'] (fs-op fs invoke)
                                ; We want to use the index and timing info from
                                ; the actual completion
                                op' (assoc op'
                                           :time (:time op)
                                           :index (:index op))]
-                           (recur root'
+                           (recur fs'
                                   nil
-                                  (conj roots root')
+                                  (conj fss fs')
                                   (conj history' op'))))
-                   [roots history'])
+                   [fss history'])
             ;_ (info :history (pprint-str history))
             ;_ (info :model-history (pprint-str model-history))
             ; Look for earliest divergence
@@ -409,13 +513,13 @@
                                               (remove op/invoke?))
                                      ; And the state just prior to i, and after
                                      ; applying i
-                                     root  (if (pos? i)
-                                             (nth roots (dec i))
-                                             (model-dir))
-                                     root' (nth roots i)]
+                                     fs  (if (pos? i)
+                                             (nth fss (dec i))
+                                             (fs))
+                                     fs' (nth fss i)]
                                  {:index    i
                                   :trace    (simple-trace ops)
-                                  :root     root
+                                  :fs       fs
                                   :expected expected
                                   :actual   actual})))))]
         (if divergence
@@ -425,19 +529,18 @@
 
 (defn print-fs-test
   "Prints out a (presumably failing) fs test to stdout"
-  [test]
-  (let [dir (:dir test)
-        res (:results test)]
-    (pprint res)
-    (println)
-    (println "At this point, the root was theoretically")
-    (pprint (:root res))
-    (println)
-    (println "And we expected to execute")
-    (pprint (:expected res))
-    (println)
-    (println "But with lazyfs we actually executed")
-    (pprint (:actual res))))
+  [res]
+  (doseq [op (:trace res)]
+    (prn op))
+  (println)
+  (println "At this point, the fs was theoretically")
+  (pprint (:fs res))
+  (println)
+  (println "And we expected to execute")
+  (pprint (:expected res))
+  (println)
+  (println "But with our filesystem we actually executed")
+  (pprint (:actual res)))
 
 (defn checker
   "A checker for shell FS operations. Like pure-checker, but also prints out
@@ -448,5 +551,5 @@
       (let [res (checker/check (pure-checker) test history opts)]
         (when-not (:valid? res)
           (store/with-out-file test "fs-test.log"
-            (print-fs-test test)))
+            (print-fs-test res)))
         res))))
