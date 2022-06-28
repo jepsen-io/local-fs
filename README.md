@@ -85,6 +85,14 @@ aggressively shrink this history to a subset of operations, though it won't
 shrink operations themselves. This might be a more efficient search than just
 waiting for the initial `lein run quickcheck` to do its thing.
 
+## Dealing with Nondeterminism
+
+Some bugs can only be reproduced *sometimes*, but you want to shrink them
+regardless. Try `lein run quickcheck --history foo.edn --quickcheck-scour 100
+...` to run up to 100 trials of any given history before declaring it
+valid/invalid. This will be agonizingly slow, but will stop the search from
+terminating early with a super-long example.
+
 ## Concurrent Tests
 
 These will *definitely* not work correctly as far as safety testing is

@@ -130,7 +130,36 @@
     test, edit it with a text editor, save it, and run it with `lein run
     test --history custom.edn`. This won't shrink at all, sadly."]
 
+   [nil "--quickcheck-scour TRIAL-COUNT" "For nondeterministic tests, try running every single history this many times before declaring it passes. Helpful for shrinking when you have a lot of time to burn, and a bug that only manifests sometimes."
+    :default  1
+    :parse-fn parse-long
+    :validate [pos? "Must be positive"]]
+
    ["-v" "--version VERSION" "A version string, passed to the DB. For lazyfs, this controls the git commit we check out."]])
+
+(defn quickcheck-trials
+  "Runs trials of a history for quickcheck. Returns the first failing test run,
+  or the last test if none fails."
+  [options history]
+  (loop [i    0
+         test nil]
+    (if (= i (:quickcheck-scour options))
+      ; Done
+      test
+      (let [test (-> (shell-test options)
+                     (assoc :generator
+                            (->> history
+                                 ;(gen/delay 2)
+                                 gen/clients)
+                            ; Probably doesn't make sense to
+                            ; shrink concurrent histories
+                            :concurrency 1)
+                     jepsen/run!)]
+        (if (true? (:valid? (:results test)))
+          ; Keep searching
+          (recur (inc i) test)
+          ; Done!
+          test)))))
 
 (def quickcheck-cmd
   "A CLI command for quickcheck-style testing. Generates histories using
@@ -141,15 +170,7 @@
     :run
     (fn run [{:keys [options]}]
       (let [prop (prop/for-all [history (test-check-gen options)]
-                   (let [test (-> (shell-test options)
-                                  (assoc :generator
-                                         (->> history
-                                              ;(gen/delay 2)
-                                              gen/clients)
-                                         ; Probably doesn't make sense to
-                                         ; shrink concurrent histories
-                                         :concurrency 1)
-                                  jepsen/run!)]
+                   (let [test (quickcheck-trials options history)]
                      (reify Result
                        (pass? [_]
                          (= true (:valid? (:workload (:results test)))))
