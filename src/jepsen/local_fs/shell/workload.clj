@@ -29,8 +29,8 @@
   "test.check generator for fs test ops. Generates append, write, mkdir, mv,
   read, etc."
   (g/frequency
-    [[10 (g/let [path gen-path]
-           {:f :read, :value [path nil]})]
+    [[5 (g/let [path gen-path]
+          {:f :read, :value [path nil]})]
      [1 (g/let [path gen-path]
           {:f :touch, :value path})]
      [1 (g/let [path gen-path, data data-gen]
