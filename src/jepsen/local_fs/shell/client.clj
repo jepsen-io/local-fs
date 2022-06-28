@@ -143,6 +143,23 @@
                             #"No such file or directory" :does-not-exist
                             (throw+ e)))))
 
+    :truncate
+    (let [[path delta] value]
+      (try+ (sh :truncate :-s (if (neg? delta)
+                                delta
+                                (str "+" delta))
+                (join-path path)
+                {:dir dir})
+            (assoc op :type :ok)
+            (catch [:exit 1] e
+              (info :err (:err e))
+              (assoc op
+                     :type :fail
+                     :error (condp re-find (:err e)
+                              #"Not a directory"           :not-dir
+                              #"No such file or directory" :does-not-exist
+                              #"Is a directory"            :not-file
+                              (throw+ e))))))
 
     :write (let [[path data] value]
              (try+ (sh :bash :-c (str "cat > " (join-path path))

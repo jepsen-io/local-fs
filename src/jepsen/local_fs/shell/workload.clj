@@ -42,7 +42,11 @@
      (g/let [path gen-path]
        {:f :rm, :value path})
      (g/let [from gen-path, to gen-path]
-       {:f :ln, :value [from to]})]))
+       {:f :ln, :value [from to]})
+     ; Right now we only want to shrink files--extension will break our
+     ; string representation of data.
+     (g/let [path gen-path, size (g/fmap - (g/scale (partial * 0.01) g/nat))]
+       {:f :truncate, :value [path size]})]))
 
 (def fs-history-gen
   "Generates a whole history"

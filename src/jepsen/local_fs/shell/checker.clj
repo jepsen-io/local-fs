@@ -14,7 +14,8 @@
                     [util :as util :refer [pprint-str
                                            timeout]]]
             [knossos.op :as op]
-            [slingshot.slingshot :refer [try+ throw+]]))
+            [slingshot.slingshot :refer [try+ throw+]])
+  (:import (java.nio.charset StandardCharsets)))
 
 (defn split-path
   "Splits a path string on / separators."
@@ -450,9 +451,23 @@
          (update-file* fs value (fn [_] (inode))))
        (assoc op :type :ok)]
 
+      :truncate
+      (let [[path delta] value]
+        [(update-file* fs path
+                       (fn [extant-inode]
+                         (let [inode (or extant-inode (inode))
+                               data (.getBytes (:data inode))
+                               size  (max 0 (+ (alength data) delta))
+                               data' (byte-array size)
+                               _     (System/arraycopy
+                                       ^bytes data (int 0)
+                                       ^bytes data' (int 0) (int size))
+                               data' (String. data' StandardCharsets/UTF_8)]
+                           (assoc inode :data data'))))
+         (assoc op :type :ok)])
+
       :write
       (let [[path data] value
-            filename    (peek path)
             fs' (update-file* fs path
                               (fn [extant-inode]
                                 (-> (or extant-inode (inode))
