@@ -13,6 +13,8 @@
                     [store :as store]
                     [util :as util :refer [pprint-str
                                            timeout]]]
+            [jepsen.local-fs.util :refer [bytes->hex
+                                          hex->bytes]]
             [knossos.op :as op]
             [slingshot.slingshot :refer [try+ throw+]])
   (:import (java.nio.charset StandardCharsets)))
@@ -44,7 +46,8 @@
    :dir               (dir)})
 
 (defn inode
-  "Constructs an inode entry. Starts off with a :link-count of 0."
+  "Constructs an inode entry. Starts off with a :link-count of 0. We represent
+  inode data as hex strings, for convenience."
   []
   {:link-count 0
    :data       ""})
@@ -456,13 +459,13 @@
         [(update-file* fs path
                        (fn [extant-inode]
                          (let [inode (or extant-inode (inode))
-                               data (.getBytes (:data inode))
+                               data  (-> inode :data hex->bytes)
                                size  (max 0 (+ (alength data) delta))
                                data' (byte-array size)
                                _     (System/arraycopy
-                                       ^bytes data (int 0)
-                                       ^bytes data' (int 0) (int size))
-                               data' (String. data' StandardCharsets/UTF_8)]
+                                       ^bytes data  0
+                                       ^bytes data' 0 (min size (alength data)))
+                               data' (bytes->hex data')]
                            (assoc inode :data data'))))
          (assoc op :type :ok)])
 

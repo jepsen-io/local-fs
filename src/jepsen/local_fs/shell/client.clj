@@ -11,7 +11,10 @@
                     [util :as util :refer [pprint-str
                                            name+
                                            timeout]]]
-            [jepsen.local-fs [util :refer [sh *sh-trace*]]]
+            [jepsen.local-fs [util :refer [bytes->hex
+                                           hex->bytes
+                                           sh
+                                           *sh-trace*]]]
             [knossos.op :as op]
             [slingshot.slingshot :refer [try+ throw+]])
   (:import (java.lang Process
@@ -46,7 +49,7 @@
     :append
     (try+ (let [[path data] value]
             (sh :bash :-c (str "cat >> " (join-path path))
-                {:dir dir, :in data})
+                {:dir dir, :in (hex->bytes data)})
             (assoc op :type :ok))
           (catch [:exit 1] e
             (assoc op
@@ -110,9 +113,12 @@
 
     :read
     (try+ (let [[path] value
-                data   (sh :cat (join-path path) {:dir dir})]
-            (assoc op :type :ok, :value [path data]))
-          (catch [:exit 1] e
+                ; data   (sh :cat (join-path path) {:dir dir})
+                hex (sh :xxd :-p (join-path path) {:dir dir})
+                ; Chomp off newlines
+                hex (str/replace hex #"\n" "")]
+            (assoc op :type :ok, :value [path hex]))
+          (catch [:exit 2] e
             (assoc op
                    :type :fail
                    :error (condp re-find (:err e)
@@ -163,7 +169,7 @@
 
     :write (let [[path data] value]
              (try+ (sh :bash :-c (str "cat > " (join-path path))
-                       {:dir dir, :in data})
+                       {:dir dir, :in (hex->bytes data)})
                    (assoc op :type :ok)
                    (catch [:exit 1] e
                      (assoc op

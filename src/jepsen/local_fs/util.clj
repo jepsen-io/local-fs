@@ -3,7 +3,20 @@
   (:require [clojure.java [shell :as shell]]
             [clojure.tools.logging :refer [info warn]]
             [jepsen [util :as util :refer [name+]]]
-            [slingshot.slingshot :refer [try+ throw+]]))
+            [slingshot.slingshot :refer [try+ throw+]])
+  (:import (java.util Arrays
+                      HexFormat)
+           (java.nio.charset StandardCharsets)))
+
+(defn hex->bytes
+  "Converts a hex string to a byte array."
+  [^String hex]
+  (-> (HexFormat/of) (.parseHex hex)))
+
+(defn bytes->hex
+  "Converts a byte array to a hex string"
+  [^bytes bs]
+  (-> (HexFormat/of) (.formatHex bs)))
 
 (def ^:dynamic *sh-trace*
   "If true, logs sh commands."
