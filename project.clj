@@ -7,4 +7,8 @@
                  [jepsen "0.2.7-SNAPSHOT"]
                  [org.clojure/test.check "1.1.1"]]
   :repl-options {:init-ns jepsen.local-fs}
-  :main jepsen.local-fs)
+  :main jepsen.local-fs
+  :test-selectors {:default (fn [m]
+                              (not (:perf m)))
+                   :perf        :perf
+                   :focus       :focus})

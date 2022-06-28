@@ -53,7 +53,7 @@ about modeling & checking POSIX filesystem safety under concurrent operations.
 That said, single-threaded testing has been remarkably productive during lazyfs
 development, so this might be useful for you too!
 
-## Usage
+## Quickcheck
 
 To check the local filesystem (using a directory called `data` in this repository):
 
@@ -61,7 +61,11 @@ To check the local filesystem (using a directory called `data` in this repositor
 lein run quickcheck
 ```
 
-To find a bug in lazyfs, run
+This automatically generates histories of operations, applies them to the
+filesystem, and checks that they look OK. If it finds a bug, it'll try to
+shrink that history to a minimal failing case.
+
+To find a bug in lazyfs, run:
 
 ```
 lein run quickcheck --db lazyfs --version be22191019619f3db7908b50fba500a3c9821884
@@ -69,11 +73,42 @@ lein run quickcheck --db lazyfs --version be22191019619f3db7908b50fba500a3c98218
 
 To do this you'll need libfuse3-dev, fuse set up appropriately for lazyfs, gcc, etc, as well as leiningen. This will run a whole bunch of tests and spit out results in `store/`. You can browse these at the filesystem directly, or run
 
+When you have a failing case, you might want to dive into it deeper. You can
+replay a test like so:
+
+```
+lein run quickcheck --db lazyfs ... --history store/some-test/some-time/history.edn
+```
+
+This will retry the same operations from that EDN file. It'll go on to
+aggressively shrink this history to a subset of operations, though it won't
+shrink operations themselves. This might be a more efficient search than just
+waiting for the initial `lein run quickcheck` to do its thing.
+
+## Concurrent Tests
+
+These will *definitely* not work correctly as far as safety testing is
+concerned, but they might be neat from a crash-safety or performance
+perspective. Try
+
+```
+lein run test --concurrency 10 --time-limit 30
+```
+
+This will run 10 IO threads which concurrently perform random operations. The
+checker assumes histories are singlethreaded and will probably complain in
+confusing ways. Pay it no mind.
+
+## Browsing Results
+
+Run
+
 ```
 lein run serve
 ```
 
-... which launches a web server on http://localhost:8080.
+... which launches a web server on http://localhost:8080, serving up the contents of `store/`.
+
 
 ## License
 

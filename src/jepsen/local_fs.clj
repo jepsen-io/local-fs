@@ -12,6 +12,7 @@
                     [generator :as gen]
                     [store :as store]
                     [tests :as tests]]
+            [jepsen.local-fs [util :as util]]
             [jepsen.local-fs.shell.workload :as shell]
             [jepsen.local-fs.db [dir :as db.dir]
                                 [lazyfs :as db.lazyfs]]
@@ -36,6 +37,7 @@
       (-> (checker/check (checker/stats) test history opts)
           (assoc :valid? true)))))
 
+; This "replays a tape" of a recorded history as best it can
 (defrecord TapeGen [ops]
   gen/Generator
   (op [this test context]
@@ -51,25 +53,26 @@
   (update [this test context event]
           this))
 
+(defn history-file->ops
+  "Turns a history file into a vector of process/f/value invocations"
+  [file]
+  (with-open [file (java.io.PushbackReader.
+                     (io/reader file))]
+    (->> (repeatedly #(edn/read {:eof ::eof} file))
+         (take-while (complement #{::eof}))
+         (keep (fn [op]
+                 (when (= :invoke (:type op))
+                   ; This won't perfectly reproduce the concurrency
+                   ; structure of the original history since we have
+                   ; no control over how long operations take, but it
+                   ; might get us kinda close?
+                   (select-keys op [:process :f :value]))))
+         vec)))
+
 (defn history-file->gen
   "Takes a filename and returns a generator from it."
   [file]
-  (let [; First, load the critical data we need from disk
-        ops (with-open [file (java.io.PushbackReader.
-                               (io/reader file))]
-              (->> (repeatedly #(edn/read {:eof ::eof} file))
-                   (take-while (complement #{::eof}))
-                   (keep (fn [op]
-                           (when (= :invoke (:type op))
-                             ; This won't perfectly reproduce the concurrency
-                             ; structure of the original history since we have
-                             ; no control over how long operations take, but it
-                             ; might get us kinda close?
-                             (select-keys op [:process :f :value]))))
-                   vec))]
-    ; Now construct a generator which zips through this history, dispatching
-    ; ops only when those processes are free.
-    (TapeGen. ops)))
+  (TapeGen. (history-file->ops file)))
 
 (defn shell-test
   "Takes CLI options and constructs a test for the shell workload."
@@ -77,7 +80,7 @@
   (let [workload (shell/workload opts)
         db       ((dbs (:db opts)) opts)]
     (merge tests/noop-test
-           opts
+           (dissoc opts :history)
            {:name   (str "shell "
                          (name (:db opts))
                          (when (:version opts)
@@ -103,8 +106,13 @@
 (defn test-check-gen
   "Takes CLI options and returns a test.check generator."
   [opts]
-  (let [workload (shell/workload opts)]
-    (:test-check-gen workload)))
+  (if-let [h (:history opts)]
+    ; We have a history; construct a generator which reproduces it and shrinks
+    (->> (history-file->ops h)
+         util/history->gen)
+    ; Use the workload generator
+    (let [workload (shell/workload opts)]
+      (:test-check-gen workload))))
 
 (def cli-opts
   "Common CLI options."
