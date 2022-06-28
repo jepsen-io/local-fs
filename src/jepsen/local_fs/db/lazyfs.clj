@@ -61,8 +61,8 @@
         " -o allow_other"
         " -o modules=subdir"
         " -o subdir=" data-dir
-        " -s"
-        " -f"
+        ; " -s" ; singlethreaded
+        " -f" ; foreground
         " >> "log-file " 2>&1")))
 
 (defn mount!
