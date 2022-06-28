@@ -7,7 +7,7 @@ This works by [generating random histories of filesystem
 operations](src/jepsen/local_fs/shell/workload.clj), [applying them to a real
 filesystem](src/jepsen/local_fs/shell/client.clj), and then checking to see
 whether the filesystem behaved like [a simulated, purely-functional
-model](src/jepsen/local_fs/shell/checker/clj). When it finds a bug, it uses
+model](src/jepsen/local_fs/shell/checker.clj). When it finds a bug, it uses
 Clojure's [test.check](https://github.com/clojure/test.check) to automatically
 shrink the history to a minimal failing example.
 
