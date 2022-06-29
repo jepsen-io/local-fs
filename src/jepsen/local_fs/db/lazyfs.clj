@@ -113,7 +113,7 @@
   (timeout 1000 (throw+ {:type ::fifo-timeout
                          :cmd  cmd
                          :fifo fifo})
-           (spit fifo cmd)))
+           (spit fifo (str cmd "\n"))))
 
 (defrecord DB [version lazyfs]
   db/DB
