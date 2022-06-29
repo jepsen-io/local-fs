@@ -141,11 +141,13 @@
   "Runs trials of a history for quickcheck. Returns the first failing test run,
   or the last test if none fails."
   [options history]
+  (info (str "Beginning quickcheck trials of " (count history) "-operation history"))
   (loop [i    0
          test nil]
     (if (= i (:quickcheck-scour options))
       ; Done
-      test
+      (do (info "quickcheck trials completed without error")
+          test)
       (let [test (-> (shell-test options)
                      (assoc :generator
                             (->> history
@@ -159,7 +161,8 @@
           ; Keep searching
           (recur (inc i) test)
           ; Done!
-          test)))))
+          (do (info "quickcheck trials found failing case")
+              test))))))
 
 (def quickcheck-cmd
   "A CLI command for quickcheck-style testing. Generates histories using
