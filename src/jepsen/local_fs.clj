@@ -135,6 +135,12 @@
     :parse-fn parse-long
     :validate [pos? "Must be positive"]]
 
+   [nil "--time-limit SECONDS"
+    "Excluding setup and teardown, how long should a test run for, in seconds?"
+    :default  60
+    :parse-fn parse-long
+    :validate [pos? "Must be positive"]]
+
    ["-v" "--version VERSION" "A version string, passed to the DB. For lazyfs, this controls the git commit we check out."]])
 
 (defn quickcheck-trials
