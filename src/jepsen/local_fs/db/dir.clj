@@ -15,4 +15,4 @@
       (sh :mkdir :-p dir))
 
     (teardown! [this test node]
-      (sh :rm :-rf dir))))
+      (sh :bash :-c (str "rm -rf " dir "/* " dir "/.*")))))
