@@ -15,6 +15,7 @@
                                            hex->bytes
                                            sh
                                            *sh-trace*]]]
+            [jepsen.local-fs.db.core :refer [lose-unfsynced-writes!]]
             [knossos.op :as op]
             [slingshot.slingshot :refer [try+ throw+]])
   (:import (java.lang Process
@@ -44,7 +45,7 @@
 
 (defn fs-op!
   "Applies a filesystem operation to the local node."
-  [dir {:keys [f value] :as op}]
+  [dir db {:keys [f value] :as op}]
   (case f
     :append
     (try+ (let [[path data] value]
@@ -61,6 +62,16 @@
 
                             (throw+ e)))))
 
+    :fsync
+    (try+ (sh :sync (join-path value))
+          (assoc op :type :ok)
+          (catch [:exit 1] e
+            (assoc op
+                   :type :fail
+                   :error (condp re-find (:err e)
+                            #"No such file or directory" :does-not-exist
+                            (throw+ e)))))
+
     :ln
     (let [[from to] value]
       (try+ (sh :ln (join-path from) (join-path to) {:dir dir})
@@ -75,6 +86,9 @@
                               #"No such file or directory" :does-not-exist
                               (throw+ e))))))
 
+    :lose-unfsynced-writes
+    (do (lose-unfsynced-writes! db)
+        (assoc op :type :ok))
 
     :mkdir
     (try+ (sh :mkdir (join-path value) {:dir dir})
@@ -181,7 +195,7 @@
 
                                      (throw+ e))))))))
 
-(defrecord FSClient [dir]
+(defrecord FSClient [dir db]
   client/Client
   (open! [this test node]
     this)
@@ -191,7 +205,7 @@
 
   (invoke! [this test op]
     (timeout 10000 (assoc op :type :info, :error :timeout)
-             (fs-op! dir op)))
+             (fs-op! dir db op)))
 
   (teardown! [this test])
 
@@ -199,5 +213,6 @@
 
 (defn client
   "Constructs a client which performs filesystem ops in the given directory."
-  [dir]
-  (map->FSClient {:dir dir}))
+  [dir db]
+  (map->FSClient {:dir dir
+                  :db  db}))

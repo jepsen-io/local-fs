@@ -77,8 +77,8 @@
 (defn shell-test
   "Takes CLI options and constructs a test for the shell workload."
   [opts]
-  (let [workload (shell/workload opts)
-        db       ((dbs (:db opts)) opts)]
+  (let [db       ((dbs (:db opts)) opts)
+        workload (shell/workload (assoc opts :db db))]
     (merge tests/noop-test
            (dissoc opts :history)
            {:name   (str "shell "

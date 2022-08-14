@@ -6,6 +6,7 @@
                     [lazyfs :as lazyfs]
                     [util :as util :refer [await-fn meh timeout]]]
             [jepsen.local-fs [util :refer [sh sh* *sh-trace*]]]
+            [jepsen.local-fs.db.core :refer [LoseUnfsyncedWrites]]
             [slingshot.slingshot :refer [try+ throw+]]))
 
 (def current-version
@@ -124,7 +125,11 @@
 
   (teardown! [this test node]
     (umount! lazyfs)
-    ))
+    )
+
+  LoseUnfsyncedWrites
+  (lose-unfsynced-writes! [this]
+    (lose-unfsynced-writes! lazyfs)))
 
 (defn db
   "Constructs a new Jepsen DB backed by a local directory, passed in {:dir

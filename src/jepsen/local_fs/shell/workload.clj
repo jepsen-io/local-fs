@@ -40,6 +40,10 @@
      [1 (g/let [path gen-path, data data-gen]
           {:f :write, :value [path data]})]
      [1 (g/let [path gen-path]
+          {:f :fsync, :value path})]
+     ; TODO: make this something you can enable/disable
+     [1 (g/return {:f :lose-unfsynced-writes})]
+     [1 (g/let [path gen-path]
           {:f :mkdir, :value path})]
      [1 (g/let [path gen-path]
           {:f :rm, :value path})]
@@ -56,7 +60,7 @@
 
 (defn workload
   "Constructs a new workload for a test."
-  [{:keys [dir]}]
-  {:client          (client dir)
+  [{:keys [dir db]}]
+  {:client          (client dir db)
    :checker         (checker)
    :test-check-gen  fs-history-gen})
