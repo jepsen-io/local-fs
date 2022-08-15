@@ -36,6 +36,8 @@
     (into [[5 (g/let [path gen-path]
                 {:f :read, :value [path nil]})]
            [1 (g/let [path gen-path]
+                {:f :size, :value [path nil]})]
+           [1 (g/let [path gen-path]
                 {:f :touch, :value path})]
            [1 (g/let [path gen-path, data data-gen]
                 {:f :append, :value [path data]})]

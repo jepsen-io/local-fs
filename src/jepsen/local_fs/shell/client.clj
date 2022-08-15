@@ -140,7 +140,6 @@
                             #"Is a directory"            :not-file
                             #"Not a directory"           :not-dir
                             #"No such file or directory" :does-not-exist
-
                             (throw+ e)))))
 
     :rm (try+ (do (sh :rm :-r (join-path value) {:dir dir})
@@ -152,6 +151,27 @@
                                 #"Not a directory"           :not-dir
                                 #"No such file or directory" :does-not-exist
                                 (throw+ e)))))
+
+    :size
+    (try+ (let [[path _] value
+                [type size]
+                (-> (sh :stat :--format "%F|%s" (join-path path) {:dir dir})
+                    str/trim-newline
+                    (str/split #"\|"))
+                size (parse-long size)
+                _ (info :type type :size size)
+                size (case type
+                       "regular empty file"  size
+                       "regular file"        size
+                       "directory"           :dir)]
+            (assoc op :type :ok, :value [path size]))
+          (catch [:exit 1] e
+            (assoc op
+                   :type :fail
+                   :error (condp re-find (:err e)
+                            #"Not a directory"           :not-dir
+                            #"No such file or directory" :does-not-exist
+                            (throw+ e)))))
 
     :touch
     (try+ (sh :touch (join-path value) {:dir dir})

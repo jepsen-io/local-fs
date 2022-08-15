@@ -748,14 +748,21 @@
       :read
       (let [path  (first value)
             entry (assert-file (get-path fs path))
-            ; If the inode is missing, we yield an empty file.
-            inode (or (get-link fs entry)
-                      (inode))]
+            inode (get-link fs entry)]
         [fs (assoc op :type :ok, :value [path (:data inode)])])
 
       :rm
       (do (get-path fs value) ; Throws if does not exist
           [(dissoc-path fs value) (assoc op :type :ok)])
+
+      :size
+      (let [[path] value
+            entry  (get-path fs path)
+            size   (case (:type entry)
+                     :dir :dir
+                     :link (let [inode (get-link fs entry)]
+                             (/ (.length ^String (:data inode)) 2)))]
+        [fs (assoc op :type :ok, :value [path size])])
 
       :touch
       [(if (get-path* fs value)
@@ -912,7 +919,7 @@
   (doseq [op (:trace res)]
     (prn op))
   (println)
-  (println "At this point, the fs was theoretically")
+  (println "Just prior to the last operation above, the fs was theoretically")
   (pprint (:fs res))
   (println)
   (println "And we expected to execute")
