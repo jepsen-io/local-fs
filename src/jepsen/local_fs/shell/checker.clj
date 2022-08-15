@@ -1,9 +1,10 @@
 (ns jepsen.local-fs.shell.checker
-  "A checkerfor local filesystem operations where we rely on shelling out to
+  "A checker for local filesystem operations where we rely on shelling out to
   various commands."
   (:require [clojure [data :refer [diff]]
                      [pprint :refer [pprint]]
                      [string :as str]]
+            [clojure.data.avl :as avl]
             [clojure.java.io :as io]
             [clojure.tools.logging :refer [info warn]]
             [dom-top.core :refer [loopr]]
@@ -35,6 +36,36 @@
   [path]
   (butlast path))
 
+(defn child-path?
+  "Is the given path a child of the parent?"
+  [parent child]
+  (let [parent-len (count parent)]
+    (and (< parent-len (count child))
+         (= parent (subvec child 0 parent-len)))))
+
+(defn direct-child-path?
+  "Is the given path a direct child of the parent?"
+  [parent child]
+  (and (= (inc (count parent)) (count child))
+       (child-path? parent child)))
+
+(defn path-compare
+  "Sorts paths alphabetically by component."
+  [a b]
+  (let [ac   (count a)
+        bc   (count b)
+        imax (min ac bc)]
+    (loop [i 0]
+      (if (<= imax i)
+        ; Equal prefixes; pick the longer.
+        (compare ac bc)
+        ; Compare this index
+        (let [a_i (nth a i)
+              b_i (nth b i)]
+          (if (= a_i b_i)
+            (recur (inc i))
+            (compare a_i b_i)))))))
+
 (declare dir)
 
 (defn fs
@@ -47,15 +78,17 @@
 
   Each of the :disk and :cache states is a map like:
 
-     :inodes  a map of inode numbers to files, with their data and reference
+     :inodes  A map of inode numbers to files, with their data and reference
               counts
-     :dir     a root directory map"
+     :entries A sorted AVL map of paths (e.g. [:a :b]) to entries
+              (a link, dir, or tombstone map)."
   []
-  (let [state {:inodes (sorted-map)
-               :dir    (dir)}]
+  (let [state {:inodes  (avl/sorted-map)
+               :entries (avl/sorted-map-by path-compare)}]
     {:next-inode-number 0
-     :disk              state
-     :cache             state}))
+     :cache             state
+     ; Start with a root directory on disk.
+     :disk              (update state :entries assoc [] (dir))}))
 
 (defn inode
   "Constructs an inode entry. Starts off with a :link-count of 0. We represent
@@ -65,14 +98,12 @@
    :data       ""})
 
 (defn dir
-  "Constructs a directory model. Contains a map of file/directory names to maps
-  representing those files or directories. Directories are:
+  "Constructs a directory entry.
 
     {:type  :dir
-     :files {\"some-filename\" {:type :link ...}}}"
+     :files :{\"some-filename\" {:type :link ...}}}"
   []
-  {:type :dir
-   :files {}})
+  {:type :dir})
 
 (defn link
   "Constructs a hard link to an inode number"
@@ -126,6 +157,33 @@
     (throw+ {:type ::does-not-exist}))
   entry)
 
+;; Working with entry maps
+
+(defn children
+  "Takes an entry map and a path, presumably referring to a directory. Returns
+  a sequence of [path entry] kv pairs which are direct or recursive children of
+  the given path."
+  [entries path]
+  (->> (avl/subrange entries > path)
+       (take-while (fn [pair]
+                     (child-path? path (key pair))))))
+
+(defn direct-children
+  "Takes an entry map and a path, presumably referring to a directory. Returns
+  a sequence of [path entry] kv pairs which are direct children (e.g. not
+  recursive) of the path."
+  [entries path]
+  (->> (children entries path)
+       (filter (partial direct-child-path? path))))
+
+(defn dissoc-children
+  "Takes an entry map and a path; delete that path's children recursively."
+  [entries path]
+  (->> (children entries path)
+       (map key)
+       (reduce dissoc! (transient entries))
+       (persistent!)))
+
 ;; Fsync
 
 (defn fsync-inode
@@ -137,17 +195,14 @@
     (if (zero? (:link-count inode))
       ; Sync deletion
       (-> fs
-          (update [:disk :inodes] dissoc inode-number)
-          (update [:cache :inodes] dissoc inode-number))
+          (update-in [:disk :inodes] dissoc inode-number)
+          (update-in [:cache :inodes] dissoc inode-number))
       ; Sync data
       (-> fs
           (assoc-in [:disk :inodes inode-number] inode)
           (update-in [:cache :inodes] dissoc inode-number)))
     ; Nothing to sync
     fs))
-
-(declare get-path*)
-(declare dissoc-path)
 
 (declare fsync-entry)
 
@@ -181,27 +236,63 @@
     nil
     disk-entry))
 
-(defn fsync-root
-  "Takes a filesystem and fsyncs the entire cached root directory structure to
-  disk. Doesn't touch inodes."
-  [fs-]
-  ;(prn :fsync-root)
-  ;(pprint fs-)
-  (let [; Merge cache down into disk
-        root' (merge-disk-cache-entries (:dir (:disk fs-))
-                                        (:dir (:cache fs-)))
-        ;_ (prn :root' root')
-        disk'  (assoc (:disk fs-) :dir root')
-        cache' (assoc (:cache fs-) :dir (dir))]
-    (assoc fs-
-           :cache cache'
-           :disk disk')))
+(defn fsync-path*
+  "Fsyncs the entry at a path non-recursively. Does not fsync inodes."
+  [fs path]
+  (let [disk-entries  (-> fs :disk :entries)
+        disked        (get disk-entries path)
+        ;_             (prn :fs)
+        ;_             (pprint fs)
+        ;_             (prn :path path)
+        cached        (get-in fs [:cache :entries path])
+        ;_ (prn :cached cached)
+        ; Remove entry from cache
+        fs'           (update-in fs [:cache :entries] dissoc path)]
+    (case (:type cached)
+      (:dir, :link) (assoc-in fs' [:disk :entries path] cached)
 
-(declare inodes-in-entry)
+      :tombstone (update-in fs' [:disk :entries] dissoc path))))
+
+(defn fsync-path-recursively*
+  "Takes a filesystem and a path. Fsyncs the entry at that path and all its
+  children. Does not fsync inodes. With no path, fsyncs the root--i.e. every
+  entry."
+  ([fs]
+   (fsync-path-recursively* fs []))
+  ([fs path]
+   (-> fs :cache :entries
+       (children path)
+       (->> (map key)
+            (reduce fsync-path* fs)))))
+
+(defn inodes-in-disk-entries
+  "Returns a collection (including duplicates) of every inode referenced on
+  disk in a filesystem."
+  [fs]
+  (->> fs :disk :entries vals (keep :inode)))
+
+(defn recreate-missing-inodes
+  "Rewrites a filesystem's disk to re-create inodes which are referenced but no
+  longer exist."
+  [fs]
+  (loopr [inodes (transient (:inodes (:disk fs)))]
+         [[path entry] (:entries (:disk fs))]
+         (if-let [inode-number (:inode entry)]
+           (if (get inodes inode-number)
+             ; Got it!
+             (recur inodes)
+             ; Whoops, it's gone; replace it with an empty one.
+             (recur (assoc! inodes inode-number (inode))))
+           ; No inode at this entry
+           (recur inodes))
+         (assoc-in fs [:disk :inodes] (persistent! inodes))))
 
 (defn lose-unfsynced-writes
   "Simulates the loss of the cache and recovery of the filesystem purely from
   disk.
+
+  Inodes which are referenced but are not on disk are replaced with empty
+  inodes.
 
   Note that the link counts on disk may not actually be reflective of the links
   themselves--we may have synced an inode but not a directory, for instance, in
@@ -210,11 +301,11 @@
   disk and update inode link counters from there, deleting inodes if they're
   unreachable."
   [fs-]
-  (let [disk (:disk fs-)
+  (let [fs' (recreate-missing-inodes fs-)
         ; Build a map of inode numbers to link counts based on the directory
         ; structure.
-        link-counts (frequencies (inodes-in-entry (:dir disk)))
-        inodes' (->> (:inodes disk)
+        link-counts (frequencies (inodes-in-disk-entries fs'))
+        inodes' (->> (:inodes (:disk fs'))
                      (reduce (fn [inodes [number inode]]
                                (let [link-count (get link-counts number 0)]
                                  (if (zero? link-count)
@@ -224,12 +315,11 @@
                                    (assoc! inodes number
                                            (assoc inode :link-count link-count)))))
                              (transient {}))
-                     persistent!
-                     (into (sorted-map)))]
+                     persistent!)]
     ; Get a fresh cache, and a fixed-up inode map
-    (assoc fs-
+    (assoc fs'
            :cache (:cache (fs))
-           :disk  (assoc disk :inodes inodes'))))
+           :disk  (assoc (:disk fs') :inodes inodes'))))
 
 ;; Inode management
 
@@ -270,88 +360,147 @@
 
 (defn update-inode-link-count
   "Increments (or decrements) the cache's link count for an inode number by
-  `delta`."
-  [fs inode-number delta]
-  (let [inode  (or (get-inode fs inode-number)
-                   (throw+ {:type         ::no-such-inode
-                            :inode-number inode-number
-                            :fs           fs}))
-        inode'  (update inode :link-count + delta)]
-    (assoc-in fs [:cache :inodes inode-number] inode')))
+  `delta`. If the optional strict? flag is set, throws when no such inode
+  exists; otherwise ignores missing inodes."
+  ([fs inode-number delta]
+   (update-inode-link-count fs inode-number delta false))
+  ([fs inode-number delta strict?]
+   (if-let [inode (get-inode fs inode-number)]
+     (let [inode' (update inode :link-count + delta)]
+       (assoc-in fs [:cache :inodes inode-number] inode'))
+     ; No such inode
+     (if strict?
+       (throw+ {:type         ::no-such-inode
+                :inode-number inode-number
+                :fs           fs})
+       fs))))
 
-(defn inodes-in-entry
-  "Finds all inode numbers (including duplicates!) referred to by all links in
-  a dir entry (e.g. a dir or link) recursively."
-  [entry]
-  (cond (link? entry) [(:inode entry)]
-        (dir? entry)  (mapcat inodes-in-entry (vals (:files entry)))
-        true          nil))
+(defn inodes-at-path
+  "Takes a directory entries map and a path in it. Finds all inode numbers
+  (including duplicates!) referred to by this specific path, not including
+  children."
+  [entries path]
+  (let [entry (get entries path)]
+    (cond (link? entry) [(:inode entry)]
+          true          nil)))
 
-(defn track-inode-link-count-changes
-  "Takes a filesystem and old and new versions of some path--i.e. directories
-  or links. Either may be nil, indicating that the path is being created or
-  deleted. If the multiset of inodes changes, updates the inode counts in the
-  fs inode table."
-  [fs entry entry']
-  (let [inodes  (frequencies (inodes-in-entry entry))
-        inodes' (frequencies (inodes-in-entry entry'))]
-    (reduce (fn [fs inode]
-              (let [delta (- (get inodes' inode 0)
-                             (get inodes  inode 0))]
-                (if (zero? delta)
-                  fs
-                  (update-inode-link-count fs inode delta))))
-            fs
-            (distinct (concat (keys inodes) (keys inodes'))))))
+(defn inodes-in-path
+  "Takes a directory entries map and a path in it. Returns the set of inodes in
+  the given path or any of its children."
+  [entries path]
+  (concat (inodes-at-path entries path)
+          (mapcat (partial inodes-at-path entries) (children entries path))))
 
 (defn assert-valid-fs
   "Checks that a filesystem is valid--e.g. that its inodes are not dangling."
   [fs]
-  (let [dir-inodes (set (inodes-in-entry (:dir fs)))
-        dangling   (remove dir-inodes (keys (:inodes fs)))]
-    (when (seq dangling)
-      (throw+ {:type     ::dangling-inodes
-               :dangling dangling
-               :dir-inodes dir-inodes
-               :fs       fs})))
-  fs)
+  ; Haven't reimplemented for new cache/disk fs
+  ;(let [inodes     (set (inodes-in-path (:entries (:disk fs))))
+  ;      dangling   (remove dir-inodes (keys (:inodes fs)))]
+  ;  (when (seq dangling)
+  ;    (throw+ {:type     ::dangling-inodes
+  ;             :dangling dangling
+  ;             :dir-inodes dir-inodes
+  ;             :fs       fs})))
+  ;fs
+  )
 
 ;; Directory traversal
+
+(defn child-paths
+  "Takes a filesystem and a path (as a vector of strings). Returns a sequence
+  of paths for all children of that path in the filesystem."
+  [fs path]
+  ; Take all the disk entries
+  (let [disk-paths (->> (children (:entries (:disk fs)) path)
+                        (map key)
+                        (into (avl/sorted-set-by path-compare)))]
+    ; And merge in the cache
+    (persistent!
+      (reduce (fn [paths [path cache-entry]]
+                (if (tombstone? cache-entry)
+                  (dissoc! paths path)
+                  (conj! paths path)))
+              (transient disk-paths)
+              (-> fs :cache :entries (children path))))))
+
+(declare get-path)
+
+(defn assert-path-parent
+  "Ensures that the parent directory of a path exists and is actually a
+  directory. Throws {:type ::does-not-exist} if parent doesn't exist, {:type
+  ::not-dir} if the parent isn't a directory."
+  [fs path]
+  (if (<= (count path) 1)
+    ; Root always exists
+    path
+    (let [;_ (prn :assert-path-parent path (parent-dir path))
+          entry (get-path fs (parent-dir path))]
+      ;(prn :entry entry)
+      (assert-dir entry)
+      ;(prn :parent path :is-dir)
+      path)))
 
 (defn get-path*
   "Takes a filesystem and a path (as a vector of strings). Returns the entry at
   that position, or nil iff it doesn't exist. The empty path refers to the
-  root. Throws:
+  root. Throws {:type ::not-dir} if the parent of this path is not a
+  directory."
+  [fs path]
+  ; Try to look up the path in the cache, then fall back to disk.
+  (let [cached (get-in fs [:cache :entries path])]
+    (cond (nil? cached)
+          (let [disk (get-in fs [:disk :entries path])]
+            ; If it's nil on disk, we should double-check that the parent is
+            ; actually a directory.
+            (when-not disk (assert-path-parent fs path))
+            disk)
 
-    {:type ::not-dir}  When some directory in path isn't a directory."
-  ([fs path]
-   ; Try to look up the path in the cache, then fall back to disk.
-   (let [cached (get-path* fs (:dir (:cache fs)) path)]
-     (cond (nil? cached)       (get-path* fs (:dir (:disk fs)) path)
-           (tombstone? cached) nil
-           true                cached)))
-  ([fs root path]
-   ;(prn :root root :path path)
-   (when root
-     (if (seq path)
-       (do (assert-dir root)
-           ;(prn :root-is-dir)
-           (let [[filename & more] path
-                 file (get (:files root) filename)]
-             ;(prn :filename filename :file file)
-             (if (seq more)
-               ; Descend
-               (recur fs file more)
-               ; We got it
-               file)))
-       ; We're asking for the root itself
-       root))))
+          ; If we have a tombstone cached, we also need to check that the
+          ; parent is a path; it might *also* be a tombstone.
+          (tombstone? cached)
+          (do (assert-path-parent fs path)
+              nil)
+
+          ; Othewise return the cached entry
+          true cached)))
 
 (defn get-path
   "Like get-path*, but throws :type ::does-not-exist when the thing doesn't
   exist."
   [fs path]
   (assert-exists (get-path* fs path)))
+
+(defn assoc-path*
+  "Helper for assoc-path which only modifies the path itself, and does not
+  recurse into subdirectories. Returns [fs' entry]."
+  [fs path entry']
+  ;(prn :assoc-path* :path path :entry' entry')
+  (let [; What entries do we have currently at this path?
+        disk-entry  (get-in fs [:disk :entries path])
+        cache-entry (get-in fs [:cache :entries path])
+        entry       (or cache-entry disk-entry)
+        ; If we're writing nil (deleting), we need to actually create a
+        ; tombstone entry.
+        entry'      (or entry' tombstone)
+        ;_ (prn :disk-entry disk-entry :cache cache-entry :entry entry :entry' entry')
+        ; Update the cache for this path
+        fs'         (assoc-in fs [:cache :entries path] entry')
+        ; Did the inode count change?
+        inode       (:inode entry)
+        inode'      (:inode entry')
+        fs' (if (= inode inode')
+              ; No change to inodes
+              fs'
+              ; Increment/decrement inode refcounts
+              (let [fs' (if (nil? inode)
+                          fs'
+                          (update-inode-link-count fs' inode -1))
+                    fs' (if (nil? inode')
+                          fs'
+                          (update-inode-link-count fs' inode' 1))]
+                fs'))]
+    [fs' entry]))
 
 (defn assoc-path
   "Takes a filesystem and a path (as a vector of strings) and a new file/dir
@@ -363,37 +512,23 @@
 
     {:type ::not-dir}        When some directory in path isn't a directory.
     {:type ::does-not-exist} When some directory in path doesn't exist."
-  ([fs path entry']
-   ; We need to know both the old and new states of the path so that we can
-   ; keep link counts up to date. To keep the recursion simpler, we capture the
-   ; current value of the entry in a promise.
-   ;(prn :assoc-path path entry')
-   (let [entry-promise (promise)
-         root' (assoc-path fs (:dir (:cache fs)) path entry-promise entry')]
-     (-> fs
-         (assoc-in [:cache :dir] root')
-         (track-inode-link-count-changes @entry-promise entry'))))
-  ; Helper arity--just for internal use. Returns a new root.
-  ([fs root path entry-promise entry']
-   (assert-exists root)
-   (assert-dir root)
-   (if (seq path)
-     (let [[filename & more] path
-           entry (get (:files root) filename)]
-       (if more
-         ; Descend
-         (assoc-in root [:files filename]
-                   (assoc-path fs entry more entry-promise entry'))
-         ; This is the final directory
-         (do (deliver entry-promise (get-in root [:files filename]))
-             (if (nil? entry')
-               ; Delete
-               (update root :files dissoc filename)
-               ; Update
-               (assoc-in root [:files filename] entry')))))
-     ; Replace this root
-     (do (deliver entry-promise dir)
-         entry'))))
+  [fs path entry']
+  ;(prn :assoc-path path entry')
+  (assert-path-parent fs path)
+  ;(prn :parent-ok)
+  (let [; Update this particular path
+        [fs' entry] (assoc-path* fs path entry')]
+    (if (and (dir? entry)
+             (not (dir? entry')))
+      ; If we changed a directory to something that *wasn't* a directory, we
+      ; also need to assoc tombstones for every path (either in cache or disk)
+      ; that was under that directory.
+      (reduce (fn [fs' path]
+                (first (assoc-path* fs' path tombstone)))
+              fs'
+              (child-paths fs path))
+      ; No need to update children
+      fs')))
 
 (defn update-path*
   "Takes a filesystem and a path (as a vector of strings) and a
@@ -499,7 +634,7 @@
 
       :fsync
       (let [entry (get-path fs value)]
-        (prn :entry entry)
+        ;(prn :entry entry)
         [(cond (link? entry) (fsync-inode fs (:inode entry))
 
                ; Right now directories are synced automatically.
@@ -512,8 +647,11 @@
 
       :ln
       (let [[from-path to-path] value
+            ;_ (prn :ln)
             from-entry (assert-file (get-path fs from-path))
+            ;_ (prn :from-entry from-entry)
             to-entry   (get-path* fs to-path)
+            ;_ (prn :to-entry to-entry)
             ; If link target is a directory, create a link *inside* that dir
             to-path    (if (dir? to-entry)
                          (vec (concat to-path [(last from-path)]))
@@ -549,10 +687,13 @@
                                (vec (concat to-path [(last from-path)]))
                                to-path)
                   to-entry   (get-path* fs to-path)]
+              ;(prn :mv)
 
               ; Look at ALL THESE WAYS TO FAIL
               (assert-dir (get-path* fs (parent-dir to-path)))
+              ;(prn :parent-is-dir)
               (assert-exists from-entry)
+              ;(prn :from-exists)
 
               (when (or (= from-path to-path)
                         ; These could be two distinct paths with links to the
@@ -576,13 +717,28 @@
               ; must be empty.
               (when (and (dir? from-entry)
                          (dir? to-entry)
-                         (seq (:files to-entry)))
+                         (seq (child-paths fs to-path)))
                 (throw+ {:type ::not-empty}))
 
-              [(-> fs
-                   (assoc-path to-path from-entry)
-                   (dissoc-path from-path))
-               (assoc op :type :ok)])
+              ; Actually do the move. First, find the relative paths of all
+              ; children
+              (let [children (->> (child-paths fs from-path)
+                                  (map (fn relative [path]
+                                         (subvec path (count from-path)))))
+                    ; Destroy the path itself--this will recursively delete the
+                    ; children.
+                    fs' (dissoc-path fs from-path)
+                    ; And copy the path to its new location
+                    fs' (assoc-path fs' to-path from-entry)
+                    ; Now copy the children to their new home
+                    fs' (reduce (fn copy-child [fs' child-path]
+                                  (let [from-path (into from-path child-path)
+                                        to-path   (into to-path child-path)
+                                        entry     (get-path* fs from-path)]
+                                    (assoc-path fs' to-path entry)))
+                                fs'
+                                children)]
+              [fs' (assoc op :type :ok)]))
             ; Working out the exact order that mv checks and throws errors
             ; has proven incredibly hard so we collapse some of them to
             ; one value.
@@ -658,7 +814,7 @@
   it."
   [fs op]
   (let [[fs' op'] (fs-op* fs op)]
-    [(fsync-root fs') op']))
+    [(fsync-path-recursively* fs') op']))
 
 (defn simple-trace
   "Takes a collection of ops from a history and strips them down to just [type

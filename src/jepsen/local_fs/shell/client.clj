@@ -63,12 +63,13 @@
                             (throw+ e)))))
 
     :fsync
-    (try+ (sh :sync (join-path value))
+    (try+ (sh :sync (join-path value) {:dir dir})
           (assoc op :type :ok)
           (catch [:exit 1] e
             (assoc op
                    :type :fail
                    :error (condp re-find (:err e)
+                            #"Not a directory"           :not-dir
                             #"No such file or directory" :does-not-exist
                             (throw+ e)))))
 
@@ -172,7 +173,7 @@
                 {:dir dir})
             (assoc op :type :ok)
             (catch [:exit 1] e
-              (info :err (:err e))
+              ; (info :err (:err e))
               (assoc op
                      :type :fail
                      :error (condp re-find (:err e)

@@ -9,6 +9,10 @@
             [jepsen.local-fs.db.core :refer [LoseUnfsyncedWrites]]
             [slingshot.slingshot :refer [try+ throw+]]))
 
+(def default-version
+  "What version do we test by default?"
+  "5d45bf8b792a1e782000e512229ec755a64c85f4")
+
 (def current-version
   "What version do we have currently built?"
   (atom nil))
@@ -119,13 +123,11 @@
 (defrecord DB [version lazyfs]
   db/DB
   (setup! [this test node]
-    (let [version (or version lazyfs/commit)]
-      (install! version)
-      (mount! lazyfs)))
+    (install! version)
+    (mount! lazyfs))
 
   (teardown! [this test node]
-    (umount! lazyfs)
-    )
+    (umount! lazyfs))
 
   LoseUnfsyncedWrites
   (lose-unfsynced-writes! [this]
@@ -137,7 +139,7 @@
   [{:keys [dir version]}]
   ; Use a full path; not everything works with relative
   (let [dir (.getCanonicalPath (io/file dir))]
-    (map->DB {:version version
+    (map->DB {:version (or version default-version)
               :lazyfs  (lazyfs/lazyfs dir)})))
 
 (defn lose-unfsynced-writes!

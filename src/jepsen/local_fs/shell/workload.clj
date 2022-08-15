@@ -25,42 +25,47 @@
   "Generates a short hex string of data to write to a file for an fs test"
   (g/fmap bytes->hex (g/scale #(/ % 100) g/bytes)))
 
-(def fs-op-gen
+(defn fs-op-gen
   "test.check generator for fs test ops. Generates append, write, mkdir, mv,
-  read, etc."
-  (g/frequency
-    [[5 (g/let [path gen-path]
-          {:f :read, :value [path nil]})]
-     [1 (g/let [path gen-path]
-          {:f :touch, :value path})]
-     [1 (g/let [path gen-path, data data-gen]
-          {:f :append, :value [path data]})]
-     [1 (g/let [source gen-path, dest gen-path]
-          {:f :mv, :value [source dest]})]
-     [1 (g/let [path gen-path, data data-gen]
-          {:f :write, :value [path data]})]
-     [1 (g/let [path gen-path]
-          {:f :fsync, :value path})]
-     ; TODO: make this something you can enable/disable
-     [1 (g/return {:f :lose-unfsynced-writes})]
-     [1 (g/let [path gen-path]
-          {:f :mkdir, :value path})]
-     [1 (g/let [path gen-path]
-          {:f :rm, :value path})]
-     [1 (g/let [from gen-path, to gen-path]
-          {:f :ln, :value [from to]})]
-     [1 (g/let [path gen-path
-                size (->> g/small-integer (g/scale (partial * 0.01)))]
-          {:f :truncate, :value [path size]})]]))
+  read, etc. Options are:
 
-(def fs-history-gen
+    :lose-unfsynced-writes    If set, emits operations to lose un-fsynced
+                              writes"
+  [opts]
+  (g/frequency
+    (into [[5 (g/let [path gen-path]
+                {:f :read, :value [path nil]})]
+           [1 (g/let [path gen-path]
+                {:f :touch, :value path})]
+           [1 (g/let [path gen-path, data data-gen]
+                {:f :append, :value [path data]})]
+           [1 (g/let [source gen-path, dest gen-path]
+                {:f :mv, :value [source dest]})]
+           [1 (g/let [path gen-path, data data-gen]
+                {:f :write, :value [path data]})]
+           [1 (g/let [path gen-path]
+                {:f :mkdir, :value path})]
+           [1 (g/let [path gen-path]
+                {:f :fsync, :value path})]
+           [1 (g/let [path gen-path]
+                {:f :rm, :value path})]
+           [1 (g/let [from gen-path, to gen-path]
+                {:f :ln, :value [from to]})]
+           [1 (g/let [path gen-path
+                      size (->> g/small-integer (g/scale (partial * 0.01)))]
+                {:f :truncate, :value [path size]})]]
+          (when (:lose-unfsynced-writes opts)
+            [[1 (g/return {:f :lose-unfsynced-writes})]]))))
+
+(defn fs-history-gen
   "Generates a whole history"
+  [opts]
   (g/scale (partial * 1000)
-    (g/vector fs-op-gen)))
+    (g/vector (fs-op-gen opts))))
 
 (defn workload
   "Constructs a new workload for a test."
-  [{:keys [dir db]}]
+  [{:keys [dir db] :as opts}]
   {:client          (client dir db)
    :checker         (checker)
-   :test-check-gen  fs-history-gen})
+   :test-check-gen  (fs-history-gen opts)})

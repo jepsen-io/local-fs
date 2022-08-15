@@ -130,6 +130,8 @@
     test, edit it with a text editor, save it, and run it with `lein run
     test --history custom.edn`. This won't shrink at all, sadly."]
 
+   [nil "--lose-unfsynced-writes" "Generates special operations in the test which trigger the loss of un-fsynced writes. Probably only useful for lazyfs or other filesystems which support this type of fault injection."]
+
    [nil "--quickcheck-scour TRIAL-COUNT" "For nondeterministic tests, try running every single history this many times before declaring it passes. Helpful for shrinking when you have a lot of time to burn, and a bug that only manifests sometimes."
     :default  1
     :parse-fn parse-long

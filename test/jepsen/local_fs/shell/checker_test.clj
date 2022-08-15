@@ -35,6 +35,24 @@
   [fs ops]
   (second (apply-ops fs ops)))
 
+(defn invocation
+  "Takes an [f value ...] completion op and returns the invocation that should
+  have produced it."
+  [[f value]]
+  [f (case f
+       ; For reads, value is [path data]; we replace data with nil.
+       :read (assoc value 1 nil)
+       value)])
+
+(defn expect
+  "Takes a series of [f value & error] ops, and asserts that running the
+  corresponding invocations against those ops produces those same
+  values/errors."
+  [ops]
+  (is (= ops
+         (run (c/fs)
+              (mapv invocation ops)))))
+
 ; Touches a file and reads it back, then deletes it.
 (deftest touch-delete
   (is (= [[:touch [:a]]
@@ -77,3 +95,72 @@
                [:read [[:a] nil]]]
               ))))
 
+; Sort of a weird edge case: the error we expect to get when linking a/a -> a
+; should be :not-dir, rather than :does-not-exist.
+(deftest ln-child-of-file-into-self
+  (is (= [[:touch [:a]]
+          [:ln [[:a :a] [:a]] :not-dir]]
+         (run (c/fs)
+              [[:touch [:a]]
+               [:ln [[:a :a] [:a]]]]))))
+
+; Move a file
+(deftest create-mv
+  (is (= [[:append [[:b] "a1"]]
+          [:mv [[:b] [:a]]]
+          [:read [[:a] "a1"]]]
+         (run (c/fs)
+              [[:append [[:b] "a1"]]
+               [:mv [[:b] [:a]]]
+               [:read [[:a] nil]]]))))
+
+; Move one directory onto another which isn't empty
+(deftest mv-dir-onto-nonempty-dir
+  (is (= [[:mkdir ["a"]]
+          [:mkdir ["a" "b"]]
+          [:truncate [["b"] 0]]
+          [:mv [["b"] ["a" "b"]]]
+          [:mkdir ["b"]]
+          [:mv [["b"] ["a"]] :not-empty]]
+         (run (c/fs)
+              [[:mkdir ["a"]]
+               [:mkdir ["a" "b"]]
+               [:truncate [["b"] 0]]
+               [:mv [["b"] ["a" "b"]]]
+               [:mkdir ["b"]]
+               [:mv [["b"] ["a"]]]]))))
+
+; Move a directory back and forth
+(deftest mv-mv
+  (expect [[:mkdir ["b"]]
+           [:touch ["b" "b"]]
+           [:mkdir ["a"]]
+           [:mv [["b"] ["a"]]]
+           [:mv [["a"] ["b"]]]]))
+
+; We should be able to rm a file that's been lost thanks to an fsync loss--the
+; missing inode shouldn't break later accesses
+(deftest touch-lose-rm
+  (expect [[:truncate [[:a] 0]]
+           [:lose-unfsynced-writes nil]
+           [:rm [:a]]]))
+
+; A checker bug where losing un-fsynced files left dangling references to
+; nonexistent inodes
+(deftest write-lose-write-sync-lose
+  (expect [[:truncate [["b"] 0]]
+           [:lose-unfsynced-writes nil]
+           [:append [["b"] "00"]]
+           [:fsync ["b"]]
+           [:lose-unfsynced-writes nil]
+           [:read [["b"] "00"]]]))
+
+; Truncating a synced file to extend it shouldn't zero its contents.
+(deftest write-sync-lose-truncate
+  (expect [[:append [["a"] "12"]]
+           [:fsync ["a"]]
+           [:read [["a"] "12"]]
+           [:lose-unfsynced-writes nil]
+           [:read [["a"] "12"]]
+           [:truncate [["a"] 2]]
+           [:read [["a"] "120000"]]]))

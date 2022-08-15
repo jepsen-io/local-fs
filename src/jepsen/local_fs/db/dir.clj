@@ -15,4 +15,12 @@
       (sh :mkdir :-p dir))
 
     (teardown! [this test node]
-      (sh :bash :-c (str "rm -rf " dir "/* " dir "/.*")))))
+      (assert (re-find #"^[a-zA-Z0-9-_./]+$" dir)
+              (str "Unexpected special characters in directory name: "
+                   (pr-str dir)))
+      (sh :bash :-c (str "rm -rf "
+                         ; Bit of a weird hack to ensure we nuke all contents
+                         ; but not the dir itself
+                         dir "/..?* "
+                         dir "/.[!.]* "
+                         dir "/*")))))
