@@ -13,36 +13,41 @@ shrink the history to a minimal failing example.
 
 That example includes a trace of the operations performed, shows you what state
 it thought the filesystem was in, what it expected to perform, and what the
-filesystem actually did. For instance, here's a bug we found in lazyfs where writes to hardlinks weren't reflected in the other links to that inode:
+filesystem actually did. For instance, here's a bug we found in lazyfs where
+fsyncing a file, losing un-fsynced writes, then extending (via `truncate`) that
+file caused the file's contents to be replaced with zeroes:
 
 ```clj
-[:ok :append [["a"] ""]]
-[:ok :ln [["a"] ["b"]]]
-[:ok :append [["b"] "00"]]
-[:ok :read [["a"] ""]]
+[:ok :append [["a"] "01"]]
+[:ok :fsync ["a"]]
+[:ok :read [["a"] "01"]]
+[:ok :lose-unfsynced-writes nil]
+[:ok :read [["a"] "01"]]
+[:ok :truncate [["a"] 1]]
+[:ok :read [["a"] "0000"]]
 
 At this point, the fs was theoretically
 {:next-inode-number 1,
- :inodes {0 {:link-count 2, :data "00"}},
- :dir
- {:type :dir,
-  :files {"a" {:type :link, :inode 0}, "b" {:type :link, :inode 0}}}}
+ :cache {:inodes {0 {:link-count 1, :data "0100"}}, :entries {}},
+ :disk
+ {:inodes {0 {:link-count 1, :data "01"}},
+  :entries {[] {:type :dir}, ["a"] {:type :link, :inode 0}}}}
 
 And we expected to execute
-{:f :read,
- :value [["a"] "00"],
- :time 18127561,
- :process 0,
+{:process 0,
+ :f :read,
+ :value [["a"] "0100"],
+ :time 55473430,
  :type :ok,
- :index 7}
+ :index 13}
 
 But with our filesystem we actually executed
-{:f :read,
- :value [["a"] ""],
- :time 18127561,
- :process 0,
+{:process 0,
+ :f :read,
+ :value [["a"] "0000"],
+ :time 55473430,
  :type :ok,
- :index 7}
+ :index 13}
 ```
 
 Like all Jepsen tests, you'll find results, logs, and performance charts for
@@ -68,10 +73,12 @@ shrink that history to a minimal failing case.
 To find a bug in lazyfs, run:
 
 ```
-lein run quickcheck --db lazyfs --version be22191019619f3db7908b50fba500a3c9821884
+lein run quickcheck --db lazyfs --version 5d45bf8b792a1e782000e512229ec755a64c85f4 --lose-unfsynced-writes
 ```
 
-To do this you'll need libfuse3-dev, fuse set up appropriately for lazyfs, gcc, etc, as well as leiningen. This will run a whole bunch of tests and spit out results in `store/`. You can browse these at the filesystem directly, or run
+To do this you'll need libfuse3-dev, fuse set up appropriately for lazyfs, gcc,
+etc, as well as leiningen. This will run a whole bunch of tests and spit out
+results in `store/`. You can browse these at the filesystem directly, or run
 
 When you have a failing case, you might want to dive into it deeper. You can
 replay a test like so:
