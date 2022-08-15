@@ -25,39 +25,66 @@
   "Generates a short hex string of data to write to a file for an fs test"
   (g/fmap bytes->hex (g/scale #(/ % 100) g/bytes)))
 
+(def funs
+  "A map of fs (e.g. :ln, :read) to
+
+    {:gen         a test.check generator for that operation
+     :weight      How often to generate this kind of op}"
+  {:read {:weight 5
+          :gen (g/let [path gen-path]
+                 {:f :read, :value [path nil]})}
+   :size {:weight 1
+          :gen   (g/let [path gen-path]
+                   {:f :size, :value [path nil]})}
+   :touch {:weight 1
+           :gen (g/let [path gen-path]
+                  {:f :touch, :value path})}
+   :append {:weight 1
+            :gen (g/let [path gen-path, data data-gen]
+                   {:f :append, :value [path data]})}
+   :mv     {:weight 1
+            :gen (g/let [source gen-path, dest gen-path]
+                   {:f :mv, :value [source dest]})}
+   :write {:weight 1
+           :gen (g/let [path gen-path, data data-gen]
+                  {:f :write, :value [path data]})}
+   :mkdir {:weight 1
+           :gen (g/let [path gen-path]
+                  {:f :mkdir, :value path})}
+   :fsync {:weight 1
+           :gen (g/let [path gen-path]
+                  {:f :fsync, :value path})}
+   :rm {:weight 1
+        :gen (g/let [path gen-path]
+               {:f :rm, :value path})}
+   :ln {:weight 1
+        :gen (g/let [from gen-path, to gen-path]
+               {:f :ln, :value [from to]})}
+   :truncate {:weight 1
+              :gen (g/let [path gen-path
+                           size (->> g/small-integer
+                                     (g/scale (partial * 0.01)))]
+                     {:f :truncate, :value [path size]})}
+   :lose-unfsynced-writes {:weight 1
+                           :gen (g/return {:f :lose-unfsynced-writes})}})
+
 (defn fs-op-gen
   "test.check generator for fs test ops. Generates append, write, mkdir, mv,
   read, etc. Options are:
 
+    :dont                     A set of fs to skip
     :lose-unfsynced-writes    If set, emits operations to lose un-fsynced
                               writes"
-  [opts]
-  (g/frequency
-    (into [[5 (g/let [path gen-path]
-                {:f :read, :value [path nil]})]
-           [1 (g/let [path gen-path]
-                {:f :size, :value [path nil]})]
-           [1 (g/let [path gen-path]
-                {:f :touch, :value path})]
-           [1 (g/let [path gen-path, data data-gen]
-                {:f :append, :value [path data]})]
-           [1 (g/let [source gen-path, dest gen-path]
-                {:f :mv, :value [source dest]})]
-           [1 (g/let [path gen-path, data data-gen]
-                {:f :write, :value [path data]})]
-           [1 (g/let [path gen-path]
-                {:f :mkdir, :value path})]
-           [1 (g/let [path gen-path]
-                {:f :fsync, :value path})]
-           [1 (g/let [path gen-path]
-                {:f :rm, :value path})]
-           [1 (g/let [from gen-path, to gen-path]
-                {:f :ln, :value [from to]})]
-           [1 (g/let [path gen-path
-                      size (->> g/small-integer (g/scale (partial * 0.01)))]
-                {:f :truncate, :value [path size]})]]
-          (when (:lose-unfsynced-writes opts)
-            [[1 (g/return {:f :lose-unfsynced-writes})]]))))
+  [{:keys [dont lose-unfsynced-writes]}]
+  (let [fs (keys funs)
+        fs (remove dont fs)
+        fs (if lose-unfsynced-writes
+             (conj fs :lose-unfsynced-writes)
+             fs)
+        gens (->> fs
+                  (map funs)
+                  (mapv (juxt :weight :gen)))]
+        (g/frequency gens)))
 
 (defn fs-history-gen
   "Generates a whole history"

@@ -11,7 +11,7 @@
 
 (def default-version
   "What version do we test by default?"
-  "5d45bf8b792a1e782000e512229ec755a64c85f4")
+  "8bd94bf93e379fa98ac45a7469559acef6d0c8ca")
 
 (def current-version
   "What version do we have currently built?"

@@ -92,6 +92,10 @@ aggressively shrink this history to a subset of operations, though it won't
 shrink operations themselves. This might be a more efficient search than just
 waiting for the initial `lein run quickcheck` to do its thing.
 
+## Options
+
+Use `--help` for a full list of options.
+
 ## Dealing with Nondeterminism
 
 Some bugs can only be reproduced *sometimes*, but you want to shrink them

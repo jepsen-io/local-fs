@@ -124,6 +124,13 @@
    [nil "--dir DIR" "What directory should we use for our mount point?"
     :default "data"]
 
+   [nil "--dont FUNCTIONS" "A comma-separated list of functions you'd like to avoid performing. For instance, `--dont ln,truncate` skips hardlink and truncate operations."
+    :default #{}
+    :parse-fn (fn [list]
+                (->> (str/split list #",\s*")
+                     (map keyword)
+                     set))]
+
    [nil "--history FILE" "Run a history taken directly from an EDN file. This
     allows you to shrink a history by hand, in case test.check's shrinking
     finds a very long example and gets stuck. Just copy history.edn from a
